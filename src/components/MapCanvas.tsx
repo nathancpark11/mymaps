@@ -1,12 +1,17 @@
 import { useEffect, useRef } from 'react'
 import maplibregl, { type GeoJSONSource, type Map as MapLibreMap, type Marker } from 'maplibre-gl'
-import type { Coordinates, Waypoint } from '../types'
+import type { Coordinates, RoadSegment, Waypoint } from '../types'
 import { CATEGORY_EMOJI } from '../types'
 import './MapCanvas.css'
 
 type MapCanvasProps = {
   location: Coordinates
   waypoints: Waypoint[]
+  roadSegments: RoadSegment[]
+  discoveredSegmentIds: string[]
+  activeTrace: Coordinates[]
+  historicalTrace: Coordinates[]
+  sectorStats: Record<string, { totalSegments: number; discoveredSegments: number; percentage: number }>
   externalLocation?: { location: Coordinates; label: string } | null
   isComposingWaypoint: boolean
   onMapReady?: (map: MapLibreMap) => void
@@ -23,6 +28,18 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
       attribution: '© OpenStreetMap contributors',
     },
     sectors: {
+      type: 'geojson',
+      data: { type: 'FeatureCollection', features: [] },
+    },
+    roads: {
+      type: 'geojson',
+      data: { type: 'FeatureCollection', features: [] },
+    },
+    activeTrace: {
+      type: 'geojson',
+      data: { type: 'FeatureCollection', features: [] },
+    },
+    historicalTrace: {
       type: 'geojson',
       data: { type: 'FeatureCollection', features: [] },
     },
@@ -59,6 +76,51 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
         'line-dasharray': [2, 2],
       },
     },
+    {
+      id: 'roads-unexplored-minor',
+      type: 'line',
+      source: 'roads',
+      filter: ['all', ['==', ['get', 'discovered'], false], ['==', ['get', 'isMajor'], false]],
+      paint: {
+        'line-color': '#9fb9ae',
+        'line-opacity': 0.66,
+        'line-width': ['interpolate', ['linear'], ['zoom'], 11, 0.7, 16, 2.2],
+      },
+    },
+    {
+      id: 'roads-unexplored-major',
+      type: 'line',
+      source: 'roads',
+      filter: ['all', ['==', ['get', 'discovered'], false], ['==', ['get', 'isMajor'], true]],
+      paint: {
+        'line-color': '#698d82',
+        'line-opacity': 0.86,
+        'line-width': ['interpolate', ['linear'], ['zoom'], 11, 1.5, 16, 4],
+      },
+    },
+    {
+      id: 'roads-discovered',
+      type: 'line',
+      source: 'roads',
+      filter: ['==', ['get', 'discovered'], true],
+      paint: {
+        'line-color': '#e78751',
+        'line-opacity': 0.94,
+        'line-width': ['interpolate', ['linear'], ['zoom'], 11, 1.8, 16, 4.5],
+      },
+    },
+    {
+      id: 'historical-trace',
+      type: 'line',
+      source: 'historicalTrace',
+      paint: { 'line-color': '#5f8f86', 'line-width': 3, 'line-opacity': 0.86, 'line-dasharray': [1, 1.5] },
+    },
+    {
+      id: 'active-trace',
+      type: 'line',
+      source: 'activeTrace',
+      paint: { 'line-color': '#dc7746', 'line-width': 4, 'line-opacity': 0.96 },
+    },
   ],
 }
 
@@ -74,23 +136,55 @@ function hexagon(center: Coordinates, radius: number, row: number, column: numbe
   return coordinates
 }
 
-function sectorData(center: Coordinates) {
+function sectorData(center: Coordinates, stats: MapCanvasProps['sectorStats']) {
   const features = []
   for (let row = 0; row < 5; row += 1) {
     for (let column = 0; column < 5; column += 1) {
-      const isDiscovered = row === 2 && column === 2
+      const sectorId = `sector:${row}:${column}`
+      const sectorStats = stats[sectorId]
+      const isDiscovered = Boolean(sectorStats?.discoveredSegments)
       features.push({
         type: 'Feature' as const,
         properties: {
+          id: sectorId,
           fill: isDiscovered ? '#ee9b61' : '#6fa69a',
           stroke: isDiscovered ? '#d67b46' : '#79a89b',
-          exploration: isDiscovered ? 34 : row === 2 && column === 3 ? 12 : 0,
+          exploration: sectorStats?.percentage ?? 0,
+          totalSegments: sectorStats?.totalSegments ?? 0,
+          discoveredSegments: sectorStats?.discoveredSegments ?? 0,
         },
         geometry: { type: 'Polygon' as const, coordinates: [hexagon(center, 780, row, column)] },
       })
     }
   }
   return { type: 'FeatureCollection' as const, features }
+}
+
+function roadData(segments: RoadSegment[], discoveredSegmentIds: string[]) {
+  const discovered = new Set(discoveredSegmentIds)
+  return {
+    type: 'FeatureCollection' as const,
+    features: segments.map((segment) => ({
+      type: 'Feature' as const,
+      properties: {
+        segmentId: segment.segmentId,
+        discovered: discovered.has(segment.segmentId),
+        isMajor: segment.isMajor,
+        highway: segment.highway,
+      },
+      geometry: {
+        type: 'LineString' as const,
+        coordinates: segment.geometry.map((point) => [point.lng, point.lat]),
+      },
+    })),
+  }
+}
+
+function traceData(points: Coordinates[]) {
+  return {
+    type: 'FeatureCollection' as const,
+    features: points.length < 2 ? [] : [{ type: 'Feature' as const, properties: {}, geometry: { type: 'LineString' as const, coordinates: points.map((point) => [point.lng, point.lat]) } }],
+  }
 }
 
 function createCurrentMarker() {
@@ -116,12 +210,24 @@ function createExternalMarker(label: string) {
   return element
 }
 
-export function MapCanvas({ location, waypoints, externalLocation, isComposingWaypoint, onMapReady }: MapCanvasProps) {
+export function MapCanvas({ location, waypoints, roadSegments, discoveredSegmentIds, activeTrace, historicalTrace, sectorStats, externalLocation, isComposingWaypoint, onMapReady }: MapCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<MapLibreMap | null>(null)
   const currentMarkerRef = useRef<Marker | null>(null)
   const waypointMarkersRef = useRef<Marker[]>([])
   const externalMarkerRef = useRef<Marker | null>(null)
+  const locationRef = useRef(location)
+  const roadSegmentsRef = useRef(roadSegments)
+  const discoveredSegmentIdsRef = useRef(discoveredSegmentIds)
+  const activeTraceRef = useRef(activeTrace)
+  const historicalTraceRef = useRef(historicalTrace)
+  const sectorStatsRef = useRef(sectorStats)
+  locationRef.current = location
+  roadSegmentsRef.current = roadSegments
+  discoveredSegmentIdsRef.current = discoveredSegmentIds
+  activeTraceRef.current = activeTrace
+  historicalTraceRef.current = historicalTrace
+  sectorStatsRef.current = sectorStats
   const onMapReadyRef = useRef(onMapReady)
   onMapReadyRef.current = onMapReady
 
@@ -142,8 +248,10 @@ export function MapCanvas({ location, waypoints, externalLocation, isComposingWa
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-right')
     map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-left')
     map.on('load', () => {
-      const sectors = map.getSource('sectors') as GeoJSONSource
-      sectors.setData(sectorData(location))
+      ;(map.getSource('sectors') as GeoJSONSource).setData(sectorData(locationRef.current, sectorStatsRef.current))
+      ;(map.getSource('roads') as GeoJSONSource).setData(roadData(roadSegmentsRef.current, discoveredSegmentIdsRef.current))
+      ;(map.getSource('activeTrace') as GeoJSONSource).setData(traceData(activeTraceRef.current))
+      ;(map.getSource('historicalTrace') as GeoJSONSource).setData(traceData(historicalTraceRef.current))
       onMapReadyRef.current?.(map)
     })
     mapRef.current = map
@@ -166,7 +274,7 @@ export function MapCanvas({ location, waypoints, externalLocation, isComposingWa
     map.easeTo({ center: [location.lng, location.lat], duration: 850, essential: true })
     if (map.isStyleLoaded()) {
       const sectors = map.getSource('sectors') as GeoJSONSource | undefined
-      sectors?.setData(sectorData(location))
+      sectors?.setData(sectorData(location, sectorStatsRef.current))
     }
 
     if (!currentMarkerRef.current) {
@@ -177,6 +285,30 @@ export function MapCanvas({ location, waypoints, externalLocation, isComposingWa
       currentMarkerRef.current.setLngLat([location.lng, location.lat])
     }
   }, [location])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !map.isStyleLoaded()) return
+    ;(map.getSource('roads') as GeoJSONSource)?.setData(roadData(roadSegments, discoveredSegmentIds))
+  }, [roadSegments, discoveredSegmentIds])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !map.isStyleLoaded()) return
+    ;(map.getSource('activeTrace') as GeoJSONSource)?.setData(traceData(activeTrace))
+  }, [activeTrace])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !map.isStyleLoaded()) return
+    ;(map.getSource('historicalTrace') as GeoJSONSource)?.setData(traceData(historicalTrace))
+  }, [historicalTrace])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !map.isStyleLoaded()) return
+    ;(map.getSource('sectors') as GeoJSONSource)?.setData(sectorData(location, sectorStats))
+  }, [sectorStats, location])
 
   useEffect(() => {
     const map = mapRef.current

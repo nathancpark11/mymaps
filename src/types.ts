@@ -41,6 +41,23 @@ export type DiscoveredSegment = {
   tripId?: string
 }
 
+export type RoadSegment = {
+  segmentId: string
+  osmWayId: number
+  geometry: [Coordinates, Coordinates]
+  highway: string
+  name?: string
+  sectorId: string
+  isMajor: boolean
+}
+
+export type RoadDataCache = {
+  cacheKey: string
+  center: Coordinates
+  fetchedAt: string
+  segments: RoadSegment[]
+}
+
 export type StorageSnapshot = {
   waypoints: Waypoint[]
   trips: Trip[]

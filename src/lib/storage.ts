@@ -1,14 +1,21 @@
-import type { DiscoveredSegment, Trip, Waypoint } from '../types'
+import type { DiscoveredSegment, RoadDataCache, Trip, Waypoint } from '../types'
 
 const DATABASE_NAME = 'my-maps-local'
-const DATABASE_VERSION = 1
-const STORE_NAMES = ['waypoints', 'trips', 'discoveries'] as const
+const DATABASE_VERSION = 2
+const STORE_NAMES = ['waypoints', 'trips', 'discoveries', 'roadData'] as const
 type StoreName = (typeof STORE_NAMES)[number]
+const STORE_KEYS: Record<StoreName, string> = {
+  waypoints: 'id',
+  trips: 'id',
+  discoveries: 'segmentId',
+  roadData: 'cacheKey',
+}
 
 const memoryStore: Record<StoreName, unknown[]> = {
   waypoints: [],
   trips: [],
   discoveries: [],
+  roadData: [],
 }
 
 function canUseIndexedDb() {
@@ -22,7 +29,7 @@ function openDatabase(): Promise<IDBDatabase> {
       const database = request.result
       STORE_NAMES.forEach((storeName) => {
         if (!database.objectStoreNames.contains(storeName)) {
-          database.createObjectStore(storeName, { keyPath: storeName === 'discoveries' ? 'segmentId' : 'id' })
+          database.createObjectStore(storeName, { keyPath: STORE_KEYS[storeName] })
         }
       })
     }
@@ -44,7 +51,7 @@ async function getAll<T>(storeName: StoreName): Promise<T[]> {
 
 async function put<T>(storeName: StoreName, value: T) {
   if (!canUseIndexedDb()) {
-    const key = storeName === 'discoveries' ? 'segmentId' : 'id'
+    const key = STORE_KEYS[storeName]
     const record = value as Record<string, unknown>
     const existingIndex = memoryStore[storeName].findIndex((item) => (item as Record<string, unknown>)[key] === record[key])
     if (existingIndex >= 0) memoryStore[storeName][existingIndex] = value
@@ -68,6 +75,11 @@ export const localStore = {
   saveTrip: (trip: Trip) => put('trips', trip),
   listDiscoveries: () => getAll<DiscoveredSegment>('discoveries'),
   saveDiscovery: (discovery: DiscoveredSegment) => put('discoveries', discovery),
+  getRoadData: async (cacheKey: string) => {
+    const records = await getAll<RoadDataCache>('roadData')
+    return records.find((record) => record.cacheKey === cacheKey)
+  },
+  saveRoadData: (roadData: RoadDataCache) => put('roadData', roadData),
   snapshot: async (): Promise<{ waypoints: Waypoint[]; trips: Trip[]; discoveries: DiscoveredSegment[] }> => ({
     waypoints: await getAll<Waypoint>('waypoints'),
     trips: await getAll<Trip>('trips'),

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { Map as MapLibreMap } from 'maplibre-gl'
+import { LngLatBounds, type Map as MapLibreMap } from 'maplibre-gl'
 import {
   Check,
   ChevronRight,
@@ -17,16 +17,27 @@ import {
   X,
 } from 'lucide-react'
 import { MapCanvas } from './components/MapCanvas'
-import { FALLBACK_LOCATION, makeId, watchCurrentLocation } from './lib/geo'
+import { distanceBetween, FALLBACK_LOCATION, makeId, sectorIdForCoordinate, watchCurrentLocation } from './lib/geo'
 import { searchOutsideMap as searchExternalPlaces, type ExternalSearchResult } from './lib/externalSearch'
+import { loadRoadData, roadCacheKey } from './lib/roadData'
+import { createRoadIndex, matchPointToRoad, shouldAcceptTripPoint, type RoadIndex } from './lib/roadMatching'
 import { localStore } from './lib/storage'
-import type { Coordinates, Waypoint, WaypointCategory } from './types'
+import type { Coordinates, DiscoveredSegment, RoadSegment, Trip, TripPoint, Waypoint, WaypointCategory } from './types'
 import { CATEGORY_EMOJI, WAYPOINT_CATEGORIES } from './types'
 
 type LocationMode = 'loading' | 'live' | 'fallback'
 type RoutingMode = 'Normal' | '+5 min' | '+10 min' | 'Adventurous'
 
 const ROUTING_MODES: RoutingMode[] = ['Normal', '+5 min', '+10 min', 'Adventurous']
+
+type ActiveTrip = {
+  id: string
+  startedAt: string
+  points: TripPoint[]
+  distanceMeters: number
+  matchedSegmentIds: string[]
+  lastMatchedSegmentId?: string
+}
 
 function App() {
   const [location, setLocation] = useState<Coordinates>(FALLBACK_LOCATION)
@@ -43,9 +54,23 @@ function App() {
   const [externalSearchError, setExternalSearchError] = useState<string | null>(null)
   const [externalResults, setExternalResults] = useState<ExternalSearchResult[]>([])
   const [externalLocation, setExternalLocation] = useState<ExternalSearchResult | null>(null)
+  const [roadSegments, setRoadSegments] = useState<RoadSegment[]>([])
+  const [roadDataStatus, setRoadDataStatus] = useState<'loading' | 'ready' | 'error'>('loading')
+  const [discoveredSegmentIds, setDiscoveredSegmentIds] = useState<string[]>([])
+  const [completedTrips, setCompletedTrips] = useState<Trip[]>([])
+  const [selectedTripId, setSelectedTripId] = useState<string | null>(null)
+  const [activeTrip, setActiveTrip] = useState<ActiveTrip | null>(null)
   const mapRef = useRef<MapLibreMap | null>(null)
   const searchRef = useRef<HTMLInputElement>(null)
   const externalAbortRef = useRef<AbortController | null>(null)
+  const activeTripRef = useRef<ActiveTrip | null>(null)
+  const roadIndexRef = useRef<RoadIndex | null>(null)
+  const roadSegmentsRef = useRef<RoadSegment[]>([])
+  const discoveredIdsRef = useRef(new Set<string>())
+  activeTripRef.current = activeTrip
+  roadIndexRef.current = createRoadIndex(roadSegments)
+  roadSegmentsRef.current = roadSegments
+  discoveredIdsRef.current = new Set(discoveredSegmentIds)
 
   const requestLocation = () => {
     if (!('geolocation' in navigator)) {
@@ -74,7 +99,16 @@ function App() {
   }
 
   useEffect(() => {
-    localStore.listWaypoints().then(setWaypoints).catch(() => setWaypoints([]))
+    localStore.snapshot().then((snapshot) => {
+      setWaypoints(snapshot.waypoints)
+      setCompletedTrips(snapshot.trips.sort((a, b) => b.startedAt.localeCompare(a.startedAt)))
+      const ids = snapshot.discoveries.map((discovery) => discovery.segmentId)
+      setDiscoveredSegmentIds(ids)
+      discoveredIdsRef.current = new Set(ids)
+    }).catch(() => {
+      setWaypoints([])
+      setCompletedTrips([])
+    })
     const onKeyDown = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault()
@@ -88,6 +122,24 @@ function App() {
   useEffect(() => {
     requestLocation()
   }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    setRoadDataStatus('loading')
+    loadRoadData(location).then((roadData) => {
+      if (cancelled) return
+      setRoadSegments(roadData.segments)
+      setRoadDataStatus('ready')
+    }).catch(() => {
+      if (!cancelled) {
+        setRoadSegments([])
+        setRoadDataStatus('error')
+      }
+    })
+    return () => { cancelled = true }
+    // Road data is loaded once per small cached area, not on every GPS update.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roadCacheKey(location)])
 
   useEffect(() => {
     if (!isComposerOpen) return
@@ -108,6 +160,60 @@ function App() {
     }
   }, [isComposerOpen])
 
+  const appendTripPoint = (coordinates: Coordinates, accuracyMeters?: number) => {
+    const draft = activeTripRef.current
+    if (!draft) return
+    const point: TripPoint = { ...coordinates, accuracyMeters, recordedAt: new Date().toISOString() }
+    const previousPoint = draft.points[draft.points.length - 1]
+    if (!shouldAcceptTripPoint(previousPoint, point)) return
+
+    const match = roadIndexRef.current
+      ? matchPointToRoad(point, roadIndexRef.current, {
+          previousPoint,
+          previousSegment: draft.lastMatchedSegmentId ? roadSegmentsRef.current.find((segment) => segment.segmentId === draft.lastMatchedSegmentId) : undefined,
+        })
+      : null
+    const matchedSegmentIds = match && !draft.matchedSegmentIds.includes(match.segment.segmentId)
+      ? [...draft.matchedSegmentIds, match.segment.segmentId]
+      : draft.matchedSegmentIds
+    if (match && !discoveredIdsRef.current.has(match.segment.segmentId)) {
+      const discovery: DiscoveredSegment = {
+        segmentId: match.segment.segmentId,
+        firstDiscoveredAt: point.recordedAt,
+        lastSeenAt: point.recordedAt,
+        tripId: draft.id,
+      }
+      discoveredIdsRef.current.add(match.segment.segmentId)
+      setDiscoveredSegmentIds((current) => current.includes(match.segment.segmentId) ? current : [...current, match.segment.segmentId])
+      localStore.saveDiscovery(discovery).catch(() => setToast('Road found, but discovery could not be saved'))
+    }
+
+    const updatedTrip: ActiveTrip = {
+      ...draft,
+      points: [...draft.points, point],
+      distanceMeters: draft.distanceMeters + (previousPoint ? distanceBetween(previousPoint, point) : 0),
+      matchedSegmentIds,
+      lastMatchedSegmentId: match?.segment.segmentId ?? draft.lastMatchedSegmentId,
+    }
+    activeTripRef.current = updatedTrip
+    setActiveTrip(updatedTrip)
+    setLocation(coordinates)
+    setLocationMode('live')
+  }
+
+  useEffect(() => {
+    if (!activeTrip?.id) return
+    const watchId = watchCurrentLocation(
+      (nextLocation, accuracyMeters) => appendTripPoint(nextLocation, accuracyMeters),
+      () => setToast('Trip recording lost the location signal'),
+    )
+    return () => {
+      if (watchId !== undefined) navigator.geolocation.clearWatch(watchId)
+    }
+    // Keep one foreground watcher for the active trip; point updates must not restart it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTrip?.id])
+
   useEffect(() => {
     if (!toast) return
     const timeout = window.setTimeout(() => setToast(null), 3500)
@@ -119,6 +225,22 @@ function App() {
     if (!normalizedSearch) return waypoints
     return waypoints.filter((waypoint) => `${waypoint.name} ${waypoint.category}`.toLowerCase().includes(normalizedSearch))
   }, [search, waypoints])
+
+  const sectorStats = useMemo(() => {
+    const stats: Record<string, { totalSegments: number; discoveredSegments: number; percentage: number }> = {}
+    for (const segment of roadSegments) {
+      const current = stats[segment.sectorId] ?? { totalSegments: 0, discoveredSegments: 0, percentage: 0 }
+      current.totalSegments += 1
+      if (discoveredSegmentIds.includes(segment.segmentId)) current.discoveredSegments += 1
+      current.percentage = current.totalSegments ? Math.round((current.discoveredSegments / current.totalSegments) * 100) : 0
+      stats[segment.sectorId] = current
+    }
+    return stats
+  }, [roadSegments, discoveredSegmentIds])
+
+  const currentSectorId = sectorIdForCoordinate(location, location)
+  const currentSectorProgress = sectorStats[currentSectorId]?.percentage ?? 0
+  const selectedTrip = completedTrips.find((trip) => trip.id === selectedTripId)
 
   const focusWaypoint = (waypoint: Waypoint) => {
     setSearch(waypoint.name)
@@ -150,6 +272,55 @@ function App() {
       setIsComposerOpen(false)
       setToast(`${waypoint.name} is on your map`)
     }).catch(() => setToast('Could not save that place locally'))
+  }
+
+  const startTrip = () => {
+    if (activeTripRef.current) return
+    const draft: ActiveTrip = {
+      id: makeId('trip'),
+      startedAt: new Date().toISOString(),
+      points: [],
+      distanceMeters: 0,
+      matchedSegmentIds: [],
+    }
+    activeTripRef.current = draft
+    setActiveTrip(draft)
+    setSelectedTripId(null)
+    setToast(roadDataStatus === 'ready' ? 'Trip recording started' : 'Trip started — local roads are still loading')
+  }
+
+  const endTrip = async () => {
+    const draft = activeTripRef.current
+    if (!draft) return
+    if (!window.confirm('End this trip and save it to your device?')) return
+    const trip: Trip = {
+      id: draft.id,
+      startedAt: draft.startedAt,
+      endedAt: new Date().toISOString(),
+      points: draft.points,
+      distanceMeters: draft.distanceMeters,
+    }
+    activeTripRef.current = null
+    setActiveTrip(null)
+    try {
+      await localStore.saveTrip(trip)
+      setCompletedTrips((current) => [trip, ...current])
+      setToast(trip.points.length > 1 ? `Trip saved · ${trip.points.length} points` : 'Trip saved with no usable GPS points')
+    } catch {
+      setToast('Trip ended, but could not be saved locally')
+    }
+  }
+
+  const selectTrip = (trip: Trip) => {
+    setSelectedTripId(trip.id)
+    if (!mapRef.current || !trip.points.length) return
+    if (trip.points.length === 1) {
+      mapRef.current.flyTo({ center: [trip.points[0].lng, trip.points[0].lat], zoom: 15, duration: 800, essential: true })
+      return
+    }
+    const bounds = new LngLatBounds()
+    trip.points.forEach((point) => bounds.extend([point.lng, point.lat]))
+    mapRef.current.fitBounds(bounds, { padding: { top: 100, bottom: 230, left: 30, right: 30 }, maxZoom: 16, duration: 900, essential: true })
   }
 
   const recenterMap = () => {
@@ -220,6 +391,11 @@ function App() {
           <MapCanvas
             location={location}
             waypoints={waypoints}
+            roadSegments={roadSegments}
+            discoveredSegmentIds={discoveredSegmentIds}
+            activeTrace={activeTrip?.points ?? []}
+            historicalTrace={selectedTrip?.points ?? []}
+            sectorStats={sectorStats}
             externalLocation={externalLocation ? { location: externalLocation.location, label: externalLocation.name } : null}
             isComposingWaypoint={isComposerOpen}
             onMapReady={(map) => { mapRef.current = map }}
@@ -276,7 +452,7 @@ function App() {
             <div className="map-caption-icon"><Compass size={17} /></div>
             <div>
               <p>{locationMode === 'live' ? 'You are here' : 'Starting area'}</p>
-              <span>{locationMode === 'fallback' ? 'Location needed' : '18% explored'}</span>
+              <span>{roadDataStatus === 'loading' ? 'Loading local roads' : locationMode === 'fallback' ? 'Location needed' : `${currentSectorProgress}% explored`}</span>
             </div>
           </div>
 
@@ -285,6 +461,11 @@ function App() {
             <div className="location-prompt-copy"><strong>{locationMode === 'loading' ? 'Finding your location…' : 'Map is using a starting area'}</strong><span>{locationMode === 'loading' ? 'Your browser may ask for permission. This can take a few seconds.' : locationHelp}</span></div>
             <button onClick={requestLocation} disabled={locationMode === 'loading'}>{locationMode === 'loading' ? 'Waiting…' : 'Use my location'}</button>
           </div>}
+
+          <button className={`trip-control ${activeTrip ? 'is-recording' : ''}`} onClick={activeTrip ? endTrip : startTrip}>
+            <span className="trip-control-dot" />
+            {activeTrip ? `End Trip · ${activeTrip.points.length} pts` : 'Start Trip'}
+          </button>
 
           <button className="add-waypoint-button" onClick={() => setIsComposerOpen(true)} aria-label="Add a waypoint">
             <Plus size={25} strokeWidth={2.6} />
@@ -297,8 +478,8 @@ function App() {
         <button className="panel-handle" onClick={() => setIsPanelExpanded((current) => !current)} aria-expanded={isPanelExpanded} aria-label={isPanelExpanded ? 'Collapse map details' : 'Open map details'}>
           <span className="panel-handle-bar" />
         </button>
-        <div className="panel-peek">
-          <div><p className="eyebrow">YOUR AREA</p><strong>18% explored</strong><span>{waypoints.length ? `${waypoints.length} saved ${waypoints.length === 1 ? 'place' : 'places'}` : 'No saved places yet'}</span></div>
+          <div className="panel-peek">
+          <div><p className="eyebrow">YOUR AREA</p><strong>{currentSectorProgress}% explored</strong><span>{activeTrip ? 'Trip recording active' : waypoints.length ? `${waypoints.length} saved ${waypoints.length === 1 ? 'place' : 'places'}` : 'No saved places yet'}</span></div>
           <button onClick={() => setIsPanelExpanded(true)} aria-label="Open map details"><ChevronRight size={18} /></button>
         </div>
         <div className="panel-scroll">
@@ -313,12 +494,12 @@ function App() {
           <div className="sector-card">
             <div className="sector-copy">
               <div className="card-kicker">THIS SECTOR</div>
-              <strong>First steps</strong>
-              <p>Keep exploring the streets close to home. Your map grows with every drive.</p>
-              <button className="text-button" onClick={() => setToast('Sector detail is being shaped for the next milestone')}>View sector details <ChevronRight size={14} /></button>
+              <strong>{currentSectorProgress}% explored</strong>
+              <p>{roadDataStatus === 'ready' ? `${sectorStats[currentSectorId]?.discoveredSegments ?? 0} of ${sectorStats[currentSectorId]?.totalSegments ?? 0} local road segments discovered.` : 'Loading local road geometry…'}</p>
+              <button className="text-button" onClick={() => setToast('Sector progress is calculated from local road data')}>How this works <ChevronRight size={14} /></button>
             </div>
-            <div className="progress-orb" aria-label="Sector exploration 18 percent">
-              <span>18%</span>
+            <div className="progress-orb" aria-label={`Sector exploration ${currentSectorProgress} percent`} style={{ '--progress': `${currentSectorProgress}%` } as React.CSSProperties}>
+              <span>{currentSectorProgress}%</span>
               <small>explored</small>
             </div>
           </div>
@@ -349,6 +530,18 @@ function App() {
               </button>
             )}
             <button className="outside-search-button" onClick={searchOutsideMyMap}><Search size={16} /> Search Outside My Map <span>↗</span></button>
+          </div>
+
+          <div className="section-heading">
+            <div><p className="eyebrow">TRIP HISTORY</p><h2>{completedTrips.length ? `${completedTrips.length} saved ${completedTrips.length === 1 ? 'drive' : 'drives'}` : 'No saved drives yet'}</h2></div>
+            {activeTrip && <span className="recording-label"><span className="recording-dot" /> recording</span>}
+          </div>
+          <div className="trip-history">
+            {completedTrips.length ? completedTrips.slice(0, 5).map((trip) => <button key={trip.id} className={`trip-row ${selectedTripId === trip.id ? 'is-selected' : ''}`} onClick={() => selectTrip(trip)}>
+              <span className="trip-row-icon"><Footprints size={15} /></span>
+              <span><strong>{new Date(trip.startedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</strong><small>{new Date(trip.startedAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })} · {trip.points.length} points</small></span>
+              <ChevronRight size={15} />
+            </button>) : <div className="trip-empty"><Footprints size={16} /><span>Start a foreground trip to build your history.</span></div>}
           </div>
 
           <div className="section-heading section-heading--route">

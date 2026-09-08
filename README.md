@@ -16,6 +16,9 @@ This prototype includes:
 - Deliberate outside search for addresses and place names using a rate-limited, locally cached Nominatim lookup. Results are map-centered with a temporary marker and OpenStreetMap attribution.
 - Local IndexedDB persistence for waypoints, plus storage abstractions for trips and discovered road segments.
 - Navigation/exploration placeholders for destination, bearing, distance, and route-mode thresholds.
+- Foreground trip recording with start/end controls, GPS quality filtering, active trace rendering, and simple trip history.
+- On-demand local road geometry from OpenStreetMap through a small Overpass proxy, cached in IndexedDB by local area.
+- Conservative GPS-to-road matching, permanent discovered-segment persistence, discovered-road styling, and calculated sector progress.
 - An installable PWA manifest and a small offline app-shell service worker.
 
 ## Architecture
@@ -36,9 +39,38 @@ public/
   sw.js                    App-shell caching only
   icon.svg                 Lightweight app icon
 api/search.js              Minimal Vercel proxy for deliberate geocoding requests
+api/roads.js               Small local Overpass road-data proxy
 ```
 
 `localStore` is the seam for a future sync adapter. Waypoints, trips, and discovered segments are separate records by design: a road can remain discovered permanently even though the individual trip that discovered it is retained as history.
+
+### Trip and discovery lifecycle
+
+`Start Trip` starts a foreground `watchPosition` session. Accepted GPS points retain latitude, longitude, timestamp, and reported accuracy. `End Trip` stops the watcher and persists a completed `Trip`; the trace remains available in the trip-history list and can be redrawn on the map.
+
+Each accepted point is matched against nearby local road segments. A successful match writes a `DiscoveredSegment` independently of the trip. Ending, hiding, or eventually deleting a trip will not need to erase permanent discovery state.
+
+### Local road data
+
+The app requests a deliberately small area around the current location (approximately a 2.5 km radius) through `api/roads.js`. The proxy queries an Overpass public instance for drivable `highway` types and falls back to a second public instance if the primary is unavailable. Normalized OSM ways are split into two-point segments with stable identifiers based on the OSM way ID and endpoint coordinates. Road metadata is cached in IndexedDB using a small geographic cache key.
+
+### Matching approach and thresholds
+
+The matcher in `src/lib/roadMatching.ts` uses a lightweight grid index to reduce candidates, point-to-segment distance, reported GPS accuracy, trace continuity, and a connected-segment check at turns. It refuses ambiguous first matches when two roads are too close together, which helps avoid falsely discovering parallel streets.
+
+Current centralized thresholds are:
+
+- Maximum reported accuracy: 50 m.
+- Maximum point-to-road distance: 24 m.
+- Minimum nearest-candidate separation for an unanchored match: 5 m.
+- Stationary point suppression: less than 4 m movement inside 20 seconds.
+- Impossible-jump guard: no more than 55 m/s, with a 120 m minimum allowance.
+
+These are intentionally understandable starting values, not a production map-matching engine. GPS can drift beside a road, multipath can reduce accuracy in dense areas, and iOS may pause or delay foreground location updates.
+
+### Sector progress
+
+Each normalized road segment receives a sector ID based on the same local hex coordinate system used by the map overlay. Sector percentage is derived as `discovered road segments / total local road segments * 100`. Sectors with no loaded road geometry remain at 0% rather than inventing progress.
 
 ## Run locally
 
@@ -71,6 +103,6 @@ No environment variables, account system, database, or paid API are required for
 
 ## Intentionally deferred
 
-The foundation does not include full road-segment matching, trip recording UI, a nationwide road graph, production routing, full offline geographic data, live traffic, accounts, cloud sync, CarPlay, native iOS, or gamification systems such as XP and achievements.
+This milestone does not include production-grade map matching, background GPS tracking, a nationwide road graph, routing, exploration route scoring, destination guidance, turn-by-turn navigation, full offline geographic data, live traffic, accounts, cloud sync, CarPlay, native iOS, or gamification systems such as XP and achievements.
 
-The next milestone should add a small location-to-road-segment pipeline: record a local trip, match GPS points to OpenStreetMap road segments, write discovery records, and redraw an individual trip from history. That will make the subdued/discovered road styling data-driven before adding route scoring.
+The next milestone should focus on validating the local discovery loop with real drives: improve the road-data refresh strategy, tune thresholds against real GPS traces, and add a small diagnostic view for rejected/ambiguous matches before considering route scoring.
