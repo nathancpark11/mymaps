@@ -305,6 +305,21 @@ export function MapCanvas({ location, waypoints, roadSegments, discoveredSegment
   onMapReadyRef.current = onMapReady
 
   useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+    const preventPageGesture = (event: TouchEvent) => event.preventDefault()
+    const options: AddEventListenerOptions = { passive: false }
+    container.addEventListener('touchstart', preventPageGesture, options)
+    container.addEventListener('touchmove', preventPageGesture, options)
+    container.addEventListener('touchend', preventPageGesture, options)
+    return () => {
+      container.removeEventListener('touchstart', preventPageGesture, options)
+      container.removeEventListener('touchmove', preventPageGesture, options)
+      container.removeEventListener('touchend', preventPageGesture, options)
+    }
+  }, [])
+
+  useEffect(() => {
     if (!containerRef.current || mapRef.current) return
 
     const map = new maplibregl.Map({
@@ -315,7 +330,7 @@ export function MapCanvas({ location, waypoints, roadSegments, discoveredSegment
       minZoom: 3,
       maxZoom: 19,
       attributionControl: false,
-      cooperativeGestures: true,
+      cooperativeGestures: false,
     })
 
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-right')

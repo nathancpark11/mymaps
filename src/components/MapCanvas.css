@@ -4,6 +4,18 @@
   overflow: hidden;
   background: #d8e6dc;
   filter: saturate(.84) contrast(.96);
+  touch-action: none;
+  overscroll-behavior: none;
+}
+
+.map-canvas .maplibregl-canvas-container,
+.map-canvas .maplibregl-canvas {
+  touch-action: none !important;
+}
+
+.map-canvas .maplibregl-ctrl,
+.map-canvas .maplibregl-ctrl button {
+  touch-action: manipulation;
 }
 
 .map-canvas--composing {

@@ -502,7 +502,7 @@ function App() {
   return (
     <div className="app-shell">
       <section className="map-column">
-        <section className="map-stage" aria-label="Exploration map">
+        <section className={`map-stage ${isPanelExpanded ? 'map-stage--panel-expanded' : ''}`} aria-label="Exploration map">
           <MapCanvas
             location={location}
             waypoints={waypoints}
