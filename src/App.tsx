@@ -431,10 +431,13 @@ function App() {
     setTripHeading(null)
     setTripSpeedMetersPerSecond(null)
     setFollowRequestToken((current) => current + 1)
-    if (developerRouteTarget) {
-      setDeveloperRouteEnabled(true)
-      setRouteError(null)
+    const routeTarget = developerRouteTarget ?? {
+      location: { lat: location.lat + 0.006, lng: location.lng + 0.004 },
+      label: 'Developer test destination',
     }
+    setDeveloperRouteTarget(routeTarget)
+    setDeveloperRouteEnabled(true)
+    setRouteError(null)
     setSelectedTripId(null)
     if (locationMode !== 'live') requestLocation()
     setToast(roadDataStatus === 'ready' ? 'Trip recording started' : 'Trip started — local roads are still loading')
