@@ -18,6 +18,7 @@ This prototype includes:
 - Navigation/exploration placeholders for destination, bearing, distance, and route-mode thresholds.
 - Foreground trip recording with start/end controls, GPS quality filtering, active trace rendering, and simple trip history.
 - Driving follow mode during active trips with a lower-centered camera, smoothed heading, compact speed/distance/time metrics, and a manual recenter control after map interaction.
+- Developer route preview using real road geometry and turn-by-turn steps from the OSRM driving service.
 - On-demand local road geometry from OpenStreetMap through a small map-area proxy, cached in IndexedDB by local area.
 - Conservative GPS-to-road matching, permanent discovered-segment persistence, discovered-road styling, and calculated sector progress.
 - A developer-only diagnostic mode that preserves raw observations and matcher decisions, draws GPS/match overlays, and exports completed trips as readable JSON.
@@ -36,6 +37,7 @@ src/
   lib/storage.ts           IndexedDB boundary with an in-memory fallback
   lib/roadData.ts          Road-area loading, cache freshness, and cell merging
   lib/roadMatching.ts      Indexed matcher, thresholds, and structured decisions
+  lib/route.ts             OSRM route response and maneuver normalization
   types.ts                 Waypoint, trip, discovery, and coordinate contracts
   styles.css               Responsive visual system and mobile sheet UI
 public/
@@ -44,6 +46,7 @@ public/
   icon.svg                 Lightweight app icon
 api/search.js              Minimal Vercel proxy for deliberate geocoding requests
 api/roads.js               Small local OpenStreetMap map-area proxy
+api/route.js               Driving-route proxy with geometry and turn steps
 ```
 
 `localStore` is the seam for a future sync adapter. Waypoints, trips, and discovered segments are separate records by design: a road can remain discovered permanently even though the individual trip that discovered it is retained as history.
@@ -57,6 +60,10 @@ Every foreground GPS callback is retained as a raw `GpsObservation` with a corre
 ### Driving follow mode
 
 Starting a trip enters a foreground driving presentation: the map follows the live GPS position at a driving zoom with the position below center so more road remains visible. A valid browser heading is preferred; otherwise heading is derived from accepted-point movement and smoothed across updates. Speed prefers the browser value and falls back to accepted-point movement, capped by the matcher’s maximum-speed guard. Distance is accumulated only between accepted trip points. Panning, zooming, or rotating pauses follow without stopping recording; `Recenter & follow` resumes it. Ending the trip returns the map to normal north-up presentation.
+
+### Developer route preview
+
+Selecting a saved waypoint or outside-search result makes it available as a route destination. The `Proposed route` developer control requests a real driving route through `api/route.js`, which proxies OSRM with full GeoJSON geometry and turn steps. The map draws the returned road path as a dotted line and the panel lists distance, estimated driving time, and maneuver instructions. While enabled, the route is refreshed when the live origin moves at least 75 meters. This is a route-validation surface; production destination selection, rerouting policy, voice guidance, and full navigation UX remain separate work.
 
 When `Developer diagnostics` is enabled in the expanded panel, the map shows raw, accepted, and rejected GPS points plus the current candidate and matched-road geometry. The panel reports coordinates, accuracy, movement, speed, status, rejection reason, candidate distances, ambiguity, matched segment, and continuity. A saved trip can be stepped sample-by-sample and exported with its observations, decisions, thresholds, and relevant road candidates.
 
@@ -124,6 +131,6 @@ No environment variables, account system, database, or paid API are required for
 
 ## Intentionally deferred
 
-This milestone does not include production-grade map matching, background GPS tracking, a nationwide road graph, routing, exploration route scoring, destination guidance, turn-by-turn navigation, full offline geographic data, live traffic, accounts, cloud sync, CarPlay, native iOS, or gamification systems such as XP and achievements. The next milestone should focus on collecting several real-drive traces, comparing decisions against known roads, and tuning thresholds/continuity behavior.
+This milestone does not include production-grade map matching, background GPS tracking, a nationwide road graph, exploration route scoring, voice guidance, full offline geographic data, live traffic, accounts, cloud sync, CarPlay, native iOS, or gamification systems such as XP and achievements. The route preview currently depends on the public OSRM service and should be evaluated for usage limits before becoming a broad production navigation feature.
 
 The next milestone should focus on validating the local discovery loop with real drives: improve the road-data refresh strategy, tune thresholds against real GPS traces, and add a small diagnostic view for rejected/ambiguous matches before considering route scoring.

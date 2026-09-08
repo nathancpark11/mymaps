@@ -18,6 +18,8 @@ type MapCanvasProps = {
   diagnosticRejectedPoints: Coordinates[]
   diagnosticCandidateSegments: RoadSegment[]
   diagnosticMatchedSegment: RoadSegment | null
+  developerRouteEnabled: boolean
+  developerRoutePoints: Coordinates[]
   followMode: boolean
   followActive: boolean
   followBearing: number
@@ -52,6 +54,10 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
       data: { type: 'FeatureCollection', features: [] },
     },
     historicalTrace: {
+      type: 'geojson',
+      data: { type: 'FeatureCollection', features: [] },
+    },
+    developerRoute: {
       type: 'geojson',
       data: { type: 'FeatureCollection', features: [] },
     },
@@ -152,6 +158,13 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
       type: 'line',
       source: 'activeTrace',
       paint: { 'line-color': '#dc7746', 'line-width': 4, 'line-opacity': 0.96 },
+    },
+    {
+      id: 'developer-route',
+      type: 'line',
+      source: 'developerRoute',
+      layout: { 'line-cap': 'round' },
+      paint: { 'line-color': '#b65f80', 'line-width': 3, 'line-opacity': 0.88, 'line-dasharray': [0.7, 1.8] },
     },
     {
       id: 'diagnostic-candidates',
@@ -279,7 +292,7 @@ function createExternalMarker(label: string) {
   return element
 }
 
-export function MapCanvas({ location, waypoints, roadSegments, discoveredSegmentIds, activeTrace, historicalTrace, sectorStats, diagnosticEnabled, diagnosticRawPoints, diagnosticAcceptedPoints, diagnosticRejectedPoints, diagnosticCandidateSegments, diagnosticMatchedSegment, followMode, followActive, followBearing, followRequestToken, locationBearing, onFollowInterrupted, externalLocation, isComposingWaypoint, onMapReady }: MapCanvasProps) {
+export function MapCanvas({ location, waypoints, roadSegments, discoveredSegmentIds, activeTrace, historicalTrace, sectorStats, diagnosticEnabled, diagnosticRawPoints, diagnosticAcceptedPoints, diagnosticRejectedPoints, diagnosticCandidateSegments, diagnosticMatchedSegment, developerRouteEnabled, developerRoutePoints, followMode, followActive, followBearing, followRequestToken, locationBearing, onFollowInterrupted, externalLocation, isComposingWaypoint, onMapReady }: MapCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<MapLibreMap | null>(null)
   const currentMarkerRef = useRef<Marker | null>(null)
@@ -348,6 +361,7 @@ export function MapCanvas({ location, waypoints, roadSegments, discoveredSegment
       ;(map.getSource('roads') as GeoJSONSource).setData(roadData(roadSegmentsRef.current, discoveredSegmentIdsRef.current))
       ;(map.getSource('activeTrace') as GeoJSONSource).setData(traceData(activeTraceRef.current))
       ;(map.getSource('historicalTrace') as GeoJSONSource).setData(traceData(historicalTraceRef.current))
+      ;(map.getSource('developerRoute') as GeoJSONSource).setData(developerRouteEnabled ? traceData(developerRoutePoints) : traceData([]))
       ;(map.getSource('diagnosticRawPoints') as GeoJSONSource).setData(diagnosticEnabled ? pointData(diagnosticRawPoints) : pointData([]))
       ;(map.getSource('diagnosticAcceptedPoints') as GeoJSONSource).setData(diagnosticEnabled ? pointData(diagnosticAcceptedPoints) : pointData([]))
       ;(map.getSource('diagnosticRejectedPoints') as GeoJSONSource).setData(diagnosticEnabled ? pointData(diagnosticRejectedPoints) : pointData([]))
@@ -437,6 +451,12 @@ export function MapCanvas({ location, waypoints, roadSegments, discoveredSegment
     if (!map || !map.isStyleLoaded()) return
     ;(map.getSource('historicalTrace') as GeoJSONSource)?.setData(traceData(historicalTrace))
   }, [historicalTrace])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !map.isStyleLoaded()) return
+    ;(map.getSource('developerRoute') as GeoJSONSource)?.setData(developerRouteEnabled ? traceData(developerRoutePoints) : traceData([]))
+  }, [developerRouteEnabled, developerRoutePoints])
 
   useEffect(() => {
     const map = mapRef.current

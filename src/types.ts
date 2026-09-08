@@ -3,6 +3,20 @@ export type Coordinates = {
   lng: number
 }
 
+export type RouteStep = {
+  instruction: string
+  distanceMeters: number
+  durationSeconds: number
+  location: Coordinates
+}
+
+export type RoutePlan = {
+  geometry: Coordinates[]
+  steps: RouteStep[]
+  distanceMeters: number
+  durationSeconds: number
+}
+
 export type WaypointCategory =
   | 'Home'
   | 'Food'

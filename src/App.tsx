@@ -20,9 +20,10 @@ import { MapCanvas } from './components/MapCanvas'
 import { bearingBetween, compassDirection, distanceBetween, FALLBACK_LOCATION, formatDistance, makeId, sectorIdForCoordinate, smoothBearing, watchCurrentLocation } from './lib/geo'
 import { searchOutsideMap as searchExternalPlaces, type ExternalSearchResult } from './lib/externalSearch'
 import { loadRoadData, mergeRoadSegments, roadCacheKey } from './lib/roadData'
+import { requestRoute } from './lib/route'
 import { createRoadIndex, decisionWithObservationId, evaluateTripPoint, MATCHING_THRESHOLDS, type RoadIndex } from './lib/roadMatching'
 import { localStore } from './lib/storage'
-import type { Coordinates, DiscoveredSegment, GpsObservation, MatchDecision, RoadSegment, Trip, TripPoint, Waypoint, WaypointCategory } from './types'
+import type { Coordinates, DiscoveredSegment, GpsObservation, MatchDecision, RoadSegment, RoutePlan, Trip, TripPoint, Waypoint, WaypointCategory } from './types'
 import { CATEGORY_EMOJI, WAYPOINT_CATEGORIES } from './types'
 
 type LocationMode = 'loading' | 'live' | 'fallback'
@@ -35,6 +36,12 @@ function formatElapsed(seconds: number) {
   const minutes = Math.floor((seconds % 3_600) / 60)
   const remainder = seconds % 60
   return hours ? `${hours}:${minutes.toString().padStart(2, '0')}:${remainder.toString().padStart(2, '0')}` : `${minutes}:${remainder.toString().padStart(2, '0')}`
+}
+
+function formatRouteDuration(seconds: number) {
+  const minutes = Math.max(1, Math.round(seconds / 60))
+  if (minutes < 60) return `${minutes} min`
+  return `${Math.floor(minutes / 60)} hr ${minutes % 60} min`
 }
 
 type ActiveTrip = {
@@ -76,10 +83,17 @@ function App() {
   const [clockNow, setClockNow] = useState(() => Date.now())
   const [diagnosticEnabled, setDiagnosticEnabled] = useState(false)
   const [selectedObservationIndex, setSelectedObservationIndex] = useState(0)
+  const [developerRouteEnabled, setDeveloperRouteEnabled] = useState(false)
+  const [developerRouteTarget, setDeveloperRouteTarget] = useState<{ location: Coordinates; label: string } | null>(null)
+  const [developerRoutePlan, setDeveloperRoutePlan] = useState<RoutePlan | null>(null)
+  const [routeLoading, setRouteLoading] = useState(false)
+  const [routeError, setRouteError] = useState<string | null>(null)
   const mapRef = useRef<MapLibreMap | null>(null)
   const searchRef = useRef<HTMLInputElement>(null)
   const externalAbortRef = useRef<AbortController | null>(null)
   const activeTripRef = useRef<ActiveTrip | null>(null)
+  const routeAbortRef = useRef<AbortController | null>(null)
+  const lastRouteRequestRef = useRef<{ start: Coordinates; targetKey: string } | null>(null)
   const roadIndexRef = useRef<RoadIndex | null>(null)
   const roadSegmentsRef = useRef<RoadSegment[]>([])
   const discoveredIdsRef = useRef(new Set<string>())
@@ -175,6 +189,38 @@ function App() {
       if (watchId !== undefined) navigator.geolocation.clearWatch(watchId)
     }
   }, [isComposerOpen])
+
+  useEffect(() => {
+    if (!developerRouteEnabled || !developerRouteTarget) {
+      routeAbortRef.current?.abort()
+      setDeveloperRoutePlan(null)
+      setRouteLoading(false)
+      setRouteError(null)
+      lastRouteRequestRef.current = null
+      return
+    }
+
+    const targetKey = `${developerRouteTarget.location.lat.toFixed(5)}:${developerRouteTarget.location.lng.toFixed(5)}`
+    const lastRequest = lastRouteRequestRef.current
+    if (lastRequest && lastRequest.targetKey === targetKey && distanceBetween(lastRequest.start, location) < 75) return
+
+    routeAbortRef.current?.abort()
+    const controller = new AbortController()
+    routeAbortRef.current = controller
+    lastRouteRequestRef.current = { start: location, targetKey }
+    setRouteLoading(true)
+    setRouteError(null)
+    requestRoute(location, developerRouteTarget.location, controller.signal).then((plan) => {
+      if (!controller.signal.aborted) setDeveloperRoutePlan(plan)
+    }).catch((error) => {
+      if (!controller.signal.aborted) {
+        setDeveloperRoutePlan(null)
+        setRouteError(error instanceof Error ? error.message : 'Route unavailable')
+      }
+    }).finally(() => {
+      if (!controller.signal.aborted) setRouteLoading(false)
+    })
+  }, [developerRouteEnabled, developerRouteTarget, location])
 
   const appendTripPoint = (coordinates: Coordinates, accuracyMeters?: number, speedMetersPerSecond?: number, headingDegrees?: number) => {
     const draft = activeTripRef.current
@@ -311,6 +357,7 @@ function App() {
   const diagnosticRejectedPoints = diagnosticDecisions.length
     ? diagnosticObservations.filter((_, index) => diagnosticDecisions[index]?.status !== 'accepted')
     : []
+  const developerRoutePoints = developerRoutePlan?.geometry ?? []
 
   const exportTripDiagnostic = (trip: Trip) => {
     const payload = {
@@ -334,6 +381,7 @@ function App() {
 
   const focusWaypoint = (waypoint: Waypoint) => {
     setSearch(waypoint.name)
+    setDeveloperRouteTarget({ location: waypoint.location, label: waypoint.name })
     setExternalSearchActive(false)
     setExternalLocation(null)
     mapRef.current?.flyTo({ center: [waypoint.location.lng, waypoint.location.lat], zoom: 15.5, duration: 800, essential: true })
@@ -342,6 +390,8 @@ function App() {
 
   const handleSearchChange = (value: string) => {
     setSearch(value)
+    setDeveloperRouteTarget(null)
+    setDeveloperRouteEnabled(false)
     setExternalSearchActive(false)
     setExternalSearchError(null)
     setExternalResults([])
@@ -486,6 +536,7 @@ function App() {
 
   const focusExternalResult = (result: ExternalSearchResult) => {
     setExternalLocation(result)
+    setDeveloperRouteTarget({ location: result.location, label: result.name })
     mapRef.current?.flyTo({ center: [result.location.lng, result.location.lat], zoom: 15, duration: 900, essential: true })
     setToast(`Showing ${result.name}`)
   }
@@ -497,6 +548,14 @@ function App() {
     setExternalSearchError(null)
     setExternalResults([])
     setExternalLocation(null)
+  }
+
+  const toggleDeveloperRoute = () => {
+    if (!developerRouteTarget) {
+      setToast('Select a saved place or outside-search result first')
+      return
+    }
+    setDeveloperRouteEnabled((current) => !current)
   }
 
   return (
@@ -517,6 +576,8 @@ function App() {
             diagnosticRejectedPoints={diagnosticRejectedPoints}
             diagnosticCandidateSegments={diagnosticCandidateSegments}
             diagnosticMatchedSegment={diagnosticMatchedSegment}
+            developerRouteEnabled={developerRouteEnabled}
+            developerRoutePoints={developerRoutePoints}
             followMode={Boolean(activeTrip)}
             followActive={Boolean(activeTrip && isFollowing)}
             followBearing={tripHeading ?? 0}
@@ -687,6 +748,26 @@ function App() {
             </button>
             {selectedTrip && <button className="diagnostic-export" onClick={() => exportTripDiagnostic(selectedTrip)}>Export JSON</button>}
           </div>
+          <div className="developer-route-row">
+            <button className={`developer-route-toggle ${developerRouteEnabled ? 'is-on' : ''}`} onClick={toggleDeveloperRoute} aria-pressed={developerRouteEnabled}>
+              <span className="developer-route-dot" /> Proposed route {developerRouteEnabled ? 'on' : 'off'}
+            </button>
+            <span>{developerRouteTarget ? `to ${developerRouteTarget.label}` : 'Select a place to preview'}</span>
+          </div>
+          {developerRouteEnabled && <div className="route-guidance-panel">
+            {routeLoading && <div className="route-guidance-state">Calculating a road route…</div>}
+            {routeError && <div className="route-guidance-state route-guidance-state--error">{routeError}</div>}
+            {!routeLoading && !routeError && developerRoutePlan && <>
+              <div className="route-guidance-summary"><strong>{formatDistance(developerRoutePlan.distanceMeters / 1_609.344)}</strong><span>{formatRouteDuration(developerRoutePlan.durationSeconds)} · driving route</span></div>
+              <div className="route-guidance-steps">
+                {developerRoutePlan.steps.map((step, index) => <div className="route-guidance-step" key={`${step.location.lat}:${step.location.lng}:${index}`}>
+                  <span>{index + 1}</span>
+                  <strong>{step.instruction}</strong>
+                  <small>{step.distanceMeters < 1000 ? `${Math.round(step.distanceMeters)} m` : `${(step.distanceMeters / 1000).toFixed(1)} km`}</small>
+                </div>)}
+              </div>
+            </>}
+          </div>}
           {diagnosticEnabled && <div className="diagnostic-panel">
             <div className="diagnostic-panel-header"><div><p className="eyebrow">LIVE GPS PIPELINE</p><strong>{activeTrip ? 'Current trip' : selectedTrip ? 'Selected trip' : 'No trip selected'}</strong></div><span className="diagnostic-live-dot" /></div>
             {diagnosticTrip && focusedObservation ? <>
