@@ -32,6 +32,7 @@ function App() {
   const [waypoints, setWaypoints] = useState<Waypoint[]>([])
   const [search, setSearch] = useState('')
   const [isComposerOpen, setIsComposerOpen] = useState(false)
+  const [isPanelExpanded, setIsPanelExpanded] = useState(false)
   const [routingMode, setRoutingMode] = useState<RoutingMode>('Normal')
   const [toast, setToast] = useState<string | null>(null)
   const [locationError, setLocationError] = useState<number | null>(null)
@@ -195,8 +196,8 @@ function App() {
           <div className="map-caption">
             <div className="map-caption-icon"><Compass size={17} /></div>
             <div>
-              <p>{locationMode === 'live' ? 'You are here' : 'A starting point for your map'}</p>
-              <span>{locationMode === 'fallback' ? 'Allow location for a more personal view' : 'Drive it. Discover it.'}</span>
+              <p>{locationMode === 'live' ? 'You are here' : 'Starting area'}</p>
+              <span>{locationMode === 'fallback' ? 'Location needed' : '18% explored'}</span>
             </div>
           </div>
 
@@ -213,13 +214,19 @@ function App() {
         </section>
       </section>
 
-      <aside className="exploration-panel">
-        <div className="panel-handle" aria-hidden="true" />
+      <aside className={`exploration-panel ${isPanelExpanded ? 'is-expanded' : ''}`}>
+        <button className="panel-handle" onClick={() => setIsPanelExpanded((current) => !current)} aria-expanded={isPanelExpanded} aria-label={isPanelExpanded ? 'Collapse map details' : 'Open map details'}>
+          <span className="panel-handle-bar" />
+        </button>
+        <div className="panel-peek">
+          <div><p className="eyebrow">YOUR AREA</p><strong>18% explored</strong><span>{waypoints.length ? `${waypoints.length} saved ${waypoints.length === 1 ? 'place' : 'places'}` : 'No saved places yet'}</span></div>
+          <button onClick={() => setIsPanelExpanded(true)} aria-label="Open map details"><ChevronRight size={18} /></button>
+        </div>
         <div className="panel-scroll">
           <div className="panel-intro">
             <div>
               <p className="eyebrow"><Sparkles size={13} /> YOUR MAP</p>
-              <h1>Take the long way<br className="desktop-break" /> home.</h1>
+              <h1>Explore nearby.</h1>
             </div>
             <button className="round-add" onClick={() => setIsComposerOpen(true)} aria-label="Add a waypoint"><Plus size={20} /></button>
           </div>
