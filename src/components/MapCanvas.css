@@ -36,6 +36,7 @@
   position: relative;
   width: 34px;
   height: 34px;
+  --heading: 0deg;
 }
 
 .current-location-pulse {
@@ -58,6 +59,23 @@
   background: #ef8f51;
   box-shadow: 0 2px 5px rgba(41, 68, 67, .27);
 }
+
+.current-location-arrow {
+  position: absolute;
+  top: 1px;
+  left: 13px;
+  width: 0;
+  height: 0;
+  border-right: 4px solid transparent;
+  border-bottom: 10px solid #d96f47;
+  border-left: 4px solid transparent;
+  opacity: 0;
+  transform: rotate(var(--heading));
+  transform-origin: 4px 16px;
+  transition: opacity .2s ease;
+}
+
+.current-location-marker.has-heading .current-location-arrow { opacity: .96; }
 
 .waypoint-marker {
   display: grid;

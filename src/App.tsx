@@ -17,7 +17,7 @@ import {
   X,
 } from 'lucide-react'
 import { MapCanvas } from './components/MapCanvas'
-import { distanceBetween, FALLBACK_LOCATION, makeId, sectorIdForCoordinate, watchCurrentLocation } from './lib/geo'
+import { bearingBetween, compassDirection, distanceBetween, FALLBACK_LOCATION, formatDistance, makeId, sectorIdForCoordinate, smoothBearing, watchCurrentLocation } from './lib/geo'
 import { searchOutsideMap as searchExternalPlaces, type ExternalSearchResult } from './lib/externalSearch'
 import { loadRoadData, mergeRoadSegments, roadCacheKey } from './lib/roadData'
 import { createRoadIndex, decisionWithObservationId, evaluateTripPoint, MATCHING_THRESHOLDS, type RoadIndex } from './lib/roadMatching'
@@ -29,6 +29,13 @@ type LocationMode = 'loading' | 'live' | 'fallback'
 type RoutingMode = 'Normal' | '+5 min' | '+10 min' | 'Adventurous'
 
 const ROUTING_MODES: RoutingMode[] = ['Normal', '+5 min', '+10 min', 'Adventurous']
+
+function formatElapsed(seconds: number) {
+  const hours = Math.floor(seconds / 3_600)
+  const minutes = Math.floor((seconds % 3_600) / 60)
+  const remainder = seconds % 60
+  return hours ? `${hours}:${minutes.toString().padStart(2, '0')}:${remainder.toString().padStart(2, '0')}` : `${minutes}:${remainder.toString().padStart(2, '0')}`
+}
 
 type ActiveTrip = {
   id: string
@@ -62,6 +69,11 @@ function App() {
   const [completedTrips, setCompletedTrips] = useState<Trip[]>([])
   const [selectedTripId, setSelectedTripId] = useState<string | null>(null)
   const [activeTrip, setActiveTrip] = useState<ActiveTrip | null>(null)
+  const [isFollowing, setIsFollowing] = useState(false)
+  const [followRequestToken, setFollowRequestToken] = useState(0)
+  const [tripHeading, setTripHeading] = useState<number | null>(null)
+  const [tripSpeedMetersPerSecond, setTripSpeedMetersPerSecond] = useState<number | null>(null)
+  const [clockNow, setClockNow] = useState(() => Date.now())
   const [diagnosticEnabled, setDiagnosticEnabled] = useState(false)
   const [selectedObservationIndex, setSelectedObservationIndex] = useState(0)
   const mapRef = useRef<MapLibreMap | null>(null)
@@ -164,7 +176,7 @@ function App() {
     }
   }, [isComposerOpen])
 
-  const appendTripPoint = (coordinates: Coordinates, accuracyMeters?: number) => {
+  const appendTripPoint = (coordinates: Coordinates, accuracyMeters?: number, speedMetersPerSecond?: number, headingDegrees?: number) => {
     const draft = activeTripRef.current
     if (!draft) return
     const point: TripPoint = { ...coordinates, accuracyMeters, recordedAt: new Date().toISOString() }
@@ -176,6 +188,20 @@ function App() {
     })
     const decision = decisionWithObservationId(observation.observationId, evaluation.decision)
     const match = evaluation.match
+    const browserSpeed = Number.isFinite(speedMetersPerSecond) && speedMetersPerSecond! >= 0 && speedMetersPerSecond! <= MATCHING_THRESHOLDS.maxSpeedMetersPerSecond
+      ? speedMetersPerSecond!
+      : null
+    const derivedSpeed = evaluation.decision.movementSpeedMetersPerSecond != null && evaluation.decision.movementSpeedMetersPerSecond <= MATCHING_THRESHOLDS.maxSpeedMetersPerSecond
+      ? evaluation.decision.movementSpeedMetersPerSecond
+      : null
+    setTripSpeedMetersPerSecond(browserSpeed ?? derivedSpeed)
+    if (evaluation.decision.acceptedPoint) {
+      const effectiveSpeed = browserSpeed ?? derivedSpeed ?? 0
+      const usableHeading = Number.isFinite(headingDegrees) && headingDegrees! >= 0 && headingDegrees! <= 360
+        ? headingDegrees!
+        : previousPoint && (evaluation.decision.movementDistanceMeters ?? 0) >= 4 ? bearingBetween(previousPoint, point) : null
+      if (usableHeading != null && effectiveSpeed >= 1.5) setTripHeading((current) => smoothBearing(current, usableHeading))
+    }
     const observations = [...draft.observations, observation]
     const decisions = [...draft.decisions, decision]
     setSelectedObservationIndex(decisions.length - 1)
@@ -222,7 +248,7 @@ function App() {
   useEffect(() => {
     if (!activeTrip?.id) return
     const watchId = watchCurrentLocation(
-      (nextLocation, accuracyMeters) => appendTripPoint(nextLocation, accuracyMeters),
+      (nextLocation, accuracyMeters, speedMetersPerSecond, headingDegrees) => appendTripPoint(nextLocation, accuracyMeters, speedMetersPerSecond, headingDegrees),
       () => setToast('Trip recording lost the location signal'),
     )
     return () => {
@@ -237,6 +263,13 @@ function App() {
     const timeout = window.setTimeout(() => setToast(null), 3500)
     return () => window.clearTimeout(timeout)
   }, [toast])
+
+  useEffect(() => {
+    if (!activeTrip) return
+    setClockNow(Date.now())
+    const interval = window.setInterval(() => setClockNow(Date.now()), 1_000)
+    return () => window.clearInterval(interval)
+  }, [activeTrip?.id])
 
   const filteredWaypoints = useMemo(() => {
     const normalizedSearch = search.trim().toLowerCase()
@@ -259,6 +292,8 @@ function App() {
   const currentSectorId = sectorIdForCoordinate(location, location)
   const currentSectorProgress = sectorStats[currentSectorId]?.percentage ?? 0
   const selectedTrip = completedTrips.find((trip) => trip.id === selectedTripId)
+  const tripElapsedSeconds = activeTrip ? Math.max(0, Math.floor((clockNow - Date.parse(activeTrip.startedAt)) / 1_000)) : 0
+  const tripSpeedMph = tripSpeedMetersPerSecond != null ? tripSpeedMetersPerSecond * 2.236936 : null
   const diagnosticTrip = activeTrip ?? selectedTrip
   const diagnosticObservations = diagnosticTrip?.observations ?? diagnosticTrip?.points.map((point, index) => ({ ...point, observationId: `legacy-${index}` })) ?? []
   const diagnosticDecisions = diagnosticTrip?.decisions ?? []
@@ -342,7 +377,12 @@ function App() {
     }
     activeTripRef.current = draft
     setActiveTrip(draft)
+    setIsFollowing(true)
+    setTripHeading(null)
+    setTripSpeedMetersPerSecond(null)
+    setFollowRequestToken((current) => current + 1)
     setSelectedTripId(null)
+    if (locationMode !== 'live') requestLocation()
     setToast(roadDataStatus === 'ready' ? 'Trip recording started' : 'Trip started — local roads are still loading')
   }
 
@@ -361,6 +401,9 @@ function App() {
     }
     activeTripRef.current = null
     setActiveTrip(null)
+    setIsFollowing(false)
+    setTripHeading(null)
+    setTripSpeedMetersPerSecond(null)
     try {
       await localStore.saveTrip(trip)
       setCompletedTrips((current) => [trip, ...current])
@@ -388,8 +431,20 @@ function App() {
       requestLocation()
       return
     }
+    if (activeTrip) {
+      setIsFollowing(true)
+      setFollowRequestToken((current) => current + 1)
+      setToast('Following your location')
+      return
+    }
     mapRef.current?.flyTo({ center: [location.lng, location.lat], zoom: 14.2, duration: 850, essential: true })
     setToast('Centered on your location')
+  }
+
+  const pauseFollow = () => {
+    if (!activeTrip || !isFollowing) return
+    setIsFollowing(false)
+    setToast('Follow paused · tap Recenter to resume')
   }
 
   const locationHelp = locationError === 1
@@ -462,11 +517,27 @@ function App() {
             diagnosticRejectedPoints={diagnosticRejectedPoints}
             diagnosticCandidateSegments={diagnosticCandidateSegments}
             diagnosticMatchedSegment={diagnosticMatchedSegment}
+            followMode={Boolean(activeTrip)}
+            followActive={Boolean(activeTrip && isFollowing)}
+            followBearing={tripHeading ?? 0}
+            followRequestToken={followRequestToken}
+            locationBearing={tripHeading}
+            onFollowInterrupted={pauseFollow}
             externalLocation={externalLocation ? { location: externalLocation.location, label: externalLocation.name } : null}
             isComposingWaypoint={isComposerOpen}
             onMapReady={(map) => { mapRef.current = map }}
           />
           <div className="map-wash" aria-hidden="true" />
+          {activeTrip && <div className="driving-overlay" aria-label="Driving trip status">
+            <div className="driving-overlay-topline"><span className="driving-mode-dot" /> <strong>DRIVING</strong><span>{isFollowing ? 'FOLLOWING' : 'FOLLOW PAUSED'}</span></div>
+            <div className="driving-metrics">
+              <div><small>HEADING</small><strong>{compassDirection(tripHeading)} <em>{tripHeading == null ? '' : `${Math.round(tripHeading)}°`}</em></strong></div>
+              <div><small>SPEED</small><strong>{tripSpeedMph == null ? '—' : `${Math.round(tripSpeedMph)} mph`}</strong></div>
+              <div><small>TRIP</small><strong>{formatDistance(activeTrip.distanceMeters / 1_609.344)}</strong></div>
+              <div><small>TIME</small><strong>{formatElapsed(tripElapsedSeconds)}</strong></div>
+            </div>
+          </div>}
+          {activeTrip && !isFollowing && <button className="follow-recenter-button" onClick={recenterMap}><LocateFixed size={15} /> Recenter &amp; follow</button>}
           <div className="map-toolbar">
             <div className="search-control">
               <label className="search-box">

@@ -17,6 +17,7 @@ This prototype includes:
 - Local IndexedDB persistence for waypoints, plus storage abstractions for trips and discovered road segments.
 - Navigation/exploration placeholders for destination, bearing, distance, and route-mode thresholds.
 - Foreground trip recording with start/end controls, GPS quality filtering, active trace rendering, and simple trip history.
+- Driving follow mode during active trips with a lower-centered camera, smoothed heading, compact speed/distance/time metrics, and a manual recenter control after map interaction.
 - On-demand local road geometry from OpenStreetMap through a small map-area proxy, cached in IndexedDB by local area.
 - Conservative GPS-to-road matching, permanent discovered-segment persistence, discovered-road styling, and calculated sector progress.
 - A developer-only diagnostic mode that preserves raw observations and matcher decisions, draws GPS/match overlays, and exports completed trips as readable JSON.
@@ -52,6 +53,10 @@ api/roads.js               Small local OpenStreetMap map-area proxy
 `Start Trip` starts a foreground `watchPosition` session. Accepted GPS points retain latitude, longitude, timestamp, and reported accuracy. `End Trip` stops the watcher and persists a completed `Trip`; the trace remains available in the trip-history list and can be redrawn on the map.
 
 Every foreground GPS callback is retained as a raw `GpsObservation` with a corresponding `MatchDecision`. Only accepted points contribute to the visible trace and distance, and only successful road matches write a `DiscoveredSegment` independently of the trip. Ending, hiding, or eventually deleting a trip will not need to erase permanent discovery state.
+
+### Driving follow mode
+
+Starting a trip enters a foreground driving presentation: the map follows the live GPS position at a driving zoom with the position below center so more road remains visible. A valid browser heading is preferred; otherwise heading is derived from accepted-point movement and smoothed across updates. Speed prefers the browser value and falls back to accepted-point movement, capped by the matcher’s maximum-speed guard. Distance is accumulated only between accepted trip points. Panning, zooming, or rotating pauses follow without stopping recording; `Recenter & follow` resumes it. Ending the trip returns the map to normal north-up presentation.
 
 When `Developer diagnostics` is enabled in the expanded panel, the map shows raw, accepted, and rejected GPS points plus the current candidate and matched-road geometry. The panel reports coordinates, accuracy, movement, speed, status, rejection reason, candidate distances, ambiguity, matched segment, and continuity. A saved trip can be stepped sample-by-sample and exported with its observations, decisions, thresholds, and relevant road candidates.
 

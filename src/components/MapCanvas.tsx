@@ -18,6 +18,12 @@ type MapCanvasProps = {
   diagnosticRejectedPoints: Coordinates[]
   diagnosticCandidateSegments: RoadSegment[]
   diagnosticMatchedSegment: RoadSegment | null
+  followMode: boolean
+  followActive: boolean
+  followBearing: number
+  followRequestToken: number
+  locationBearing: number | null
+  onFollowInterrupted?: () => void
   externalLocation?: { location: Coordinates; label: string } | null
   isComposingWaypoint: boolean
   onMapReady?: (map: MapLibreMap) => void
@@ -253,7 +259,7 @@ function pointData(points: Coordinates[]) {
 function createCurrentMarker() {
   const element = document.createElement('div')
   element.className = 'current-location-marker'
-  element.innerHTML = '<span class="current-location-pulse"></span><span class="current-location-dot"></span>'
+  element.innerHTML = '<span class="current-location-pulse"></span><span class="current-location-arrow"></span><span class="current-location-dot"></span>'
   return element
 }
 
@@ -273,7 +279,7 @@ function createExternalMarker(label: string) {
   return element
 }
 
-export function MapCanvas({ location, waypoints, roadSegments, discoveredSegmentIds, activeTrace, historicalTrace, sectorStats, diagnosticEnabled, diagnosticRawPoints, diagnosticAcceptedPoints, diagnosticRejectedPoints, diagnosticCandidateSegments, diagnosticMatchedSegment, externalLocation, isComposingWaypoint, onMapReady }: MapCanvasProps) {
+export function MapCanvas({ location, waypoints, roadSegments, discoveredSegmentIds, activeTrace, historicalTrace, sectorStats, diagnosticEnabled, diagnosticRawPoints, diagnosticAcceptedPoints, diagnosticRejectedPoints, diagnosticCandidateSegments, diagnosticMatchedSegment, followMode, followActive, followBearing, followRequestToken, locationBearing, onFollowInterrupted, externalLocation, isComposingWaypoint, onMapReady }: MapCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<MapLibreMap | null>(null)
   const currentMarkerRef = useRef<Marker | null>(null)
@@ -285,12 +291,16 @@ export function MapCanvas({ location, waypoints, roadSegments, discoveredSegment
   const activeTraceRef = useRef(activeTrace)
   const historicalTraceRef = useRef(historicalTrace)
   const sectorStatsRef = useRef(sectorStats)
+  const followActiveRef = useRef(followActive)
+  const onFollowInterruptedRef = useRef(onFollowInterrupted)
   locationRef.current = location
   roadSegmentsRef.current = roadSegments
   discoveredSegmentIdsRef.current = discoveredSegmentIds
   activeTraceRef.current = activeTrace
   historicalTraceRef.current = historicalTrace
   sectorStatsRef.current = sectorStats
+  followActiveRef.current = followActive
+  onFollowInterruptedRef.current = onFollowInterrupted
   const onMapReadyRef = useRef(onMapReady)
   onMapReadyRef.current = onMapReady
 
@@ -310,6 +320,14 @@ export function MapCanvas({ location, waypoints, roadSegments, discoveredSegment
 
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-right')
     map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-left')
+    const handleUserInteraction = (event: { originalEvent?: unknown; source?: string }) => {
+      if (event.source === 'follow' || !event.originalEvent || !followActiveRef.current) return
+      onFollowInterruptedRef.current?.()
+    }
+    map.on('dragstart', handleUserInteraction)
+    map.on('zoomstart', handleUserInteraction)
+    map.on('rotatestart', handleUserInteraction)
+    map.on('wheel', handleUserInteraction)
     map.on('load', () => {
       ;(map.getSource('sectors') as GeoJSONSource).setData(sectorData(locationRef.current, sectorStatsRef.current))
       ;(map.getSource('roads') as GeoJSONSource).setData(roadData(roadSegmentsRef.current, discoveredSegmentIdsRef.current))
@@ -328,6 +346,10 @@ export function MapCanvas({ location, waypoints, roadSegments, discoveredSegment
       waypointMarkersRef.current.forEach((marker) => marker.remove())
       currentMarkerRef.current?.remove()
       externalMarkerRef.current?.remove()
+      map.off('dragstart', handleUserInteraction)
+      map.off('zoomstart', handleUserInteraction)
+      map.off('rotatestart', handleUserInteraction)
+      map.off('wheel', handleUserInteraction)
       map.remove()
       mapRef.current = null
     }
@@ -339,7 +361,18 @@ export function MapCanvas({ location, waypoints, roadSegments, discoveredSegment
     const map = mapRef.current
     if (!map) return
 
-    map.easeTo({ center: [location.lng, location.lat], duration: 850, essential: true })
+    if (followMode && followActive) {
+      map.easeTo({
+        center: [location.lng, location.lat],
+        zoom: 15,
+        bearing: followBearing,
+        offset: [0, Math.min(120, map.getContainer().clientHeight * 0.16)],
+        duration: 650,
+        essential: true,
+      }, { source: 'follow' })
+    } else if (!followMode) {
+      map.easeTo({ center: [location.lng, location.lat], bearing: 0, offset: [0, 0], duration: 850, essential: true }, { source: 'normal' })
+    }
     if (map.isStyleLoaded()) {
       const sectors = map.getSource('sectors') as GeoJSONSource | undefined
       sectors?.setData(sectorData(location, sectorStatsRef.current))
@@ -352,7 +385,25 @@ export function MapCanvas({ location, waypoints, roadSegments, discoveredSegment
     } else {
       currentMarkerRef.current.setLngLat([location.lng, location.lat])
     }
-  }, [location])
+    const element = currentMarkerRef.current?.getElement()
+    if (element) {
+      element.classList.toggle('has-heading', locationBearing != null)
+      element.style.setProperty('--heading', `${locationBearing ?? 0}deg`)
+    }
+  }, [location, followMode, followActive, followBearing, locationBearing])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !followMode || !followActive) return
+    map.easeTo({
+      center: [location.lng, location.lat],
+      zoom: 15,
+      bearing: followBearing,
+      offset: [0, Math.min(120, map.getContainer().clientHeight * 0.16)],
+      duration: 700,
+      essential: true,
+    }, { source: 'follow' })
+  }, [followRequestToken])
 
   useEffect(() => {
     const map = mapRef.current
