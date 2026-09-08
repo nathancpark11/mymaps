@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import maplibregl, { type GeoJSONSource, type Map as MapLibreMap, type Marker } from 'maplibre-gl'
+import maplibregl, { LngLatBounds, type GeoJSONSource, type Map as MapLibreMap, type Marker } from 'maplibre-gl'
 import type { Coordinates, RoadSegment, Waypoint } from '../types'
 import { CATEGORY_EMOJI } from '../types'
 import './MapCanvas.css'
@@ -164,7 +164,7 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
       type: 'line',
       source: 'developerRoute',
       layout: { 'line-cap': 'round' },
-      paint: { 'line-color': '#b65f80', 'line-width': 3, 'line-opacity': 0.88, 'line-dasharray': [0.7, 1.8] },
+      paint: { 'line-color': '#c44770', 'line-width': 5, 'line-opacity': 0.98, 'line-dasharray': [2.2, 2.2] },
     },
     {
       id: 'diagnostic-candidates',
@@ -269,6 +269,13 @@ function pointData(points: Coordinates[]) {
   }
 }
 
+function fitRoute(map: MapLibreMap, points: Coordinates[]) {
+  if (points.length < 2) return
+  const bounds = new LngLatBounds()
+  points.forEach((point) => bounds.extend([point.lng, point.lat]))
+  map.fitBounds(bounds, { padding: { top: 150, bottom: 230, left: 34, right: 34 }, maxZoom: 15.5, duration: 900, essential: true }, { source: 'developer-route' })
+}
+
 function createCurrentMarker() {
   const element = document.createElement('div')
   element.className = 'current-location-marker'
@@ -308,6 +315,7 @@ export function MapCanvas({ location, waypoints, roadSegments, discoveredSegment
   const onFollowInterruptedRef = useRef(onFollowInterrupted)
   const developerRouteEnabledRef = useRef(developerRouteEnabled)
   const developerRoutePointsRef = useRef(developerRoutePoints)
+  const fittedRouteSignatureRef = useRef('')
   locationRef.current = location
   roadSegmentsRef.current = roadSegments
   discoveredSegmentIdsRef.current = discoveredSegmentIds
@@ -365,7 +373,9 @@ export function MapCanvas({ location, waypoints, roadSegments, discoveredSegment
       ;(map.getSource('roads') as GeoJSONSource).setData(roadData(roadSegmentsRef.current, discoveredSegmentIdsRef.current))
       ;(map.getSource('activeTrace') as GeoJSONSource).setData(traceData(activeTraceRef.current))
       ;(map.getSource('historicalTrace') as GeoJSONSource).setData(traceData(historicalTraceRef.current))
-      ;(map.getSource('developerRoute') as GeoJSONSource).setData(developerRouteEnabledRef.current ? traceData(developerRoutePointsRef.current) : traceData([]))
+      const routePoints = developerRouteEnabledRef.current ? developerRoutePointsRef.current : []
+      ;(map.getSource('developerRoute') as GeoJSONSource).setData(traceData(routePoints))
+      if (routePoints.length > 1) fitRoute(map, routePoints)
       ;(map.getSource('diagnosticRawPoints') as GeoJSONSource).setData(diagnosticEnabled ? pointData(diagnosticRawPoints) : pointData([]))
       ;(map.getSource('diagnosticAcceptedPoints') as GeoJSONSource).setData(diagnosticEnabled ? pointData(diagnosticAcceptedPoints) : pointData([]))
       ;(map.getSource('diagnosticRejectedPoints') as GeoJSONSource).setData(diagnosticEnabled ? pointData(diagnosticRejectedPoints) : pointData([]))
@@ -459,7 +469,14 @@ export function MapCanvas({ location, waypoints, roadSegments, discoveredSegment
   useEffect(() => {
     const map = mapRef.current
     if (!map || !map.isStyleLoaded()) return
-    ;(map.getSource('developerRoute') as GeoJSONSource)?.setData(developerRouteEnabled ? traceData(developerRoutePoints) : traceData([]))
+    const routePoints = developerRouteEnabled ? developerRoutePoints : []
+    ;(map.getSource('developerRoute') as GeoJSONSource)?.setData(traceData(routePoints))
+    const signature = routePoints.length ? `${routePoints[0].lat}:${routePoints[0].lng}:${routePoints[routePoints.length - 1].lat}:${routePoints[routePoints.length - 1].lng}:${routePoints.length}` : ''
+    if (signature && signature !== fittedRouteSignatureRef.current) {
+      fittedRouteSignatureRef.current = signature
+      fitRoute(map, routePoints)
+    }
+    if (!signature) fittedRouteSignatureRef.current = ''
   }, [developerRouteEnabled, developerRoutePoints])
 
   useEffect(() => {
