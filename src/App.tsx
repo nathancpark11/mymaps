@@ -431,6 +431,10 @@ function App() {
     setTripHeading(null)
     setTripSpeedMetersPerSecond(null)
     setFollowRequestToken((current) => current + 1)
+    if (developerRouteTarget) {
+      setDeveloperRouteEnabled(true)
+      setRouteError(null)
+    }
     setSelectedTripId(null)
     if (locationMode !== 'live') requestLocation()
     setToast(roadDataStatus === 'ready' ? 'Trip recording started' : 'Trip started — local roads are still loading')
@@ -597,6 +601,7 @@ function App() {
               <div><small>TRIP</small><strong>{formatDistance(activeTrip.distanceMeters / 1_609.344)}</strong></div>
               <div><small>TIME</small><strong>{formatElapsed(tripElapsedSeconds)}</strong></div>
             </div>
+            <div className="driving-route-status">{developerRouteTarget ? routeLoading ? 'Calculating route…' : routeError ? 'Route unavailable' : developerRoutePlan ? `Route to ${developerRouteTarget.label}` : 'Preparing route…' : 'Select a destination to show a route'}</div>
           </div>}
           {activeTrip && !isFollowing && <button className="follow-recenter-button" onClick={recenterMap}><LocateFixed size={15} /> Recenter &amp; follow</button>}
           <div className="map-toolbar">
