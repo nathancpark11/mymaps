@@ -7,6 +7,7 @@ import './MapCanvas.css'
 type MapCanvasProps = {
   location: Coordinates
   waypoints: Waypoint[]
+  externalLocation?: { location: Coordinates; label: string } | null
   isComposingWaypoint: boolean
   onMapReady?: (map: MapLibreMap) => void
 }
@@ -107,11 +108,20 @@ function createWaypointMarker(waypoint: Waypoint) {
   return element
 }
 
-export function MapCanvas({ location, waypoints, isComposingWaypoint, onMapReady }: MapCanvasProps) {
+function createExternalMarker(label: string) {
+  const element = document.createElement('div')
+  element.className = 'external-result-marker'
+  element.title = label
+  element.innerHTML = '<span></span>'
+  return element
+}
+
+export function MapCanvas({ location, waypoints, externalLocation, isComposingWaypoint, onMapReady }: MapCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<MapLibreMap | null>(null)
   const currentMarkerRef = useRef<Marker | null>(null)
   const waypointMarkersRef = useRef<Marker[]>([])
+  const externalMarkerRef = useRef<Marker | null>(null)
   const onMapReadyRef = useRef(onMapReady)
   onMapReadyRef.current = onMapReady
 
@@ -141,6 +151,7 @@ export function MapCanvas({ location, waypoints, isComposingWaypoint, onMapReady
     return () => {
       waypointMarkersRef.current.forEach((marker) => marker.remove())
       currentMarkerRef.current?.remove()
+      externalMarkerRef.current?.remove()
       map.remove()
       mapRef.current = null
     }
@@ -177,6 +188,18 @@ export function MapCanvas({ location, waypoints, isComposingWaypoint, onMapReady
         .addTo(map),
     )
   }, [waypoints])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    externalMarkerRef.current?.remove()
+    externalMarkerRef.current = null
+    if (externalLocation) {
+      externalMarkerRef.current = new maplibregl.Marker({ element: createExternalMarker(externalLocation.label), anchor: 'center' })
+        .setLngLat([externalLocation.location.lng, externalLocation.location.lat])
+        .addTo(map)
+    }
+  }, [externalLocation])
 
   return <div ref={containerRef} className={`map-canvas ${isComposingWaypoint ? 'map-canvas--composing' : ''}`} />
 }

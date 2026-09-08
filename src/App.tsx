@@ -6,7 +6,9 @@ import {
   Clock3,
   Compass,
   Footprints,
+  Globe2,
   LocateFixed,
+  LoaderCircle,
   MapPinned,
   Navigation,
   Plus,
@@ -16,6 +18,7 @@ import {
 } from 'lucide-react'
 import { MapCanvas } from './components/MapCanvas'
 import { FALLBACK_LOCATION, makeId, watchCurrentLocation } from './lib/geo'
+import { searchOutsideMap as searchExternalPlaces, type ExternalSearchResult } from './lib/externalSearch'
 import { localStore } from './lib/storage'
 import type { Coordinates, Waypoint, WaypointCategory } from './types'
 import { CATEGORY_EMOJI, WAYPOINT_CATEGORIES } from './types'
@@ -35,8 +38,14 @@ function App() {
   const [routingMode, setRoutingMode] = useState<RoutingMode>('Normal')
   const [toast, setToast] = useState<string | null>(null)
   const [locationError, setLocationError] = useState<number | null>(null)
+  const [externalSearchActive, setExternalSearchActive] = useState(false)
+  const [externalSearchLoading, setExternalSearchLoading] = useState(false)
+  const [externalSearchError, setExternalSearchError] = useState<string | null>(null)
+  const [externalResults, setExternalResults] = useState<ExternalSearchResult[]>([])
+  const [externalLocation, setExternalLocation] = useState<ExternalSearchResult | null>(null)
   const mapRef = useRef<MapLibreMap | null>(null)
   const searchRef = useRef<HTMLInputElement>(null)
+  const externalAbortRef = useRef<AbortController | null>(null)
 
   const requestLocation = () => {
     if (!('geolocation' in navigator)) {
@@ -113,8 +122,19 @@ function App() {
 
   const focusWaypoint = (waypoint: Waypoint) => {
     setSearch(waypoint.name)
+    setExternalSearchActive(false)
+    setExternalLocation(null)
     mapRef.current?.flyTo({ center: [waypoint.location.lng, waypoint.location.lat], zoom: 15.5, duration: 800, essential: true })
     setToast(`Centered on ${waypoint.name}`)
+  }
+
+  const handleSearchChange = (value: string) => {
+    setSearch(value)
+    setExternalSearchActive(false)
+    setExternalSearchError(null)
+    setExternalResults([])
+    setExternalLocation(null)
+    externalAbortRef.current?.abort()
   }
 
   const saveWaypoint = (name: string, category: WaypointCategory) => {
@@ -149,8 +169,48 @@ function App() {
         ? 'The location request timed out. Try again.'
     : 'Allow location access to move the map to where you are.'
 
-  const searchOutsideMyMap = () => {
-    setToast(search.trim() ? `Outside search for “${search.trim()}” is coming later` : 'Outside search is coming later')
+  const searchOutsideMyMap = async () => {
+    const query = search.trim()
+    if (!query) {
+      setToast('Type an address or place to search outside your map')
+      searchRef.current?.focus()
+      return
+    }
+
+    externalAbortRef.current?.abort()
+    const controller = new AbortController()
+    externalAbortRef.current = controller
+    setExternalSearchActive(true)
+    setExternalSearchLoading(true)
+    setExternalSearchError(null)
+    setExternalResults([])
+    setExternalLocation(null)
+
+    try {
+      const results = await searchExternalPlaces(query, controller.signal)
+      setExternalResults(results)
+      if (!results.length) setToast(`No outside results for “${query}”`)
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return
+      setExternalSearchError('Outside search is temporarily unavailable. Try again in a moment.')
+    } finally {
+      if (!controller.signal.aborted) setExternalSearchLoading(false)
+    }
+  }
+
+  const focusExternalResult = (result: ExternalSearchResult) => {
+    setExternalLocation(result)
+    mapRef.current?.flyTo({ center: [result.location.lng, result.location.lat], zoom: 15, duration: 900, essential: true })
+    setToast(`Showing ${result.name}`)
+  }
+
+  const returnToPersonalSearch = () => {
+    externalAbortRef.current?.abort()
+    setExternalSearchActive(false)
+    setExternalSearchLoading(false)
+    setExternalSearchError(null)
+    setExternalResults([])
+    setExternalLocation(null)
   }
 
   return (
@@ -160,6 +220,7 @@ function App() {
           <MapCanvas
             location={location}
             waypoints={waypoints}
+            externalLocation={externalLocation ? { location: externalLocation.location, label: externalLocation.name } : null}
             isComposingWaypoint={isComposerOpen}
             onMapReady={(map) => { mapRef.current = map }}
           />
@@ -171,7 +232,7 @@ function App() {
                 <input
                   ref={searchRef}
                   value={search}
-                  onChange={(event) => setSearch(event.target.value)}
+                  onChange={(event) => handleSearchChange(event.target.value)}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter' && filteredWaypoints[0]) focusWaypoint(filteredWaypoints[0])
                     if (event.key === 'Enter' && !filteredWaypoints[0] && search.trim()) searchOutsideMyMap()
@@ -181,14 +242,27 @@ function App() {
                 />
                 <kbd>⌘ K</kbd>
               </label>
-              {search.trim() && <div className="search-results" role="listbox" aria-label="Personal map results">
-                {filteredWaypoints.slice(0, 4).map((waypoint) => <button key={waypoint.id} className="search-result" onClick={() => focusWaypoint(waypoint)} role="option">
-                  <span className="search-result-icon">{CATEGORY_EMOJI[waypoint.category]}</span>
-                  <span><strong>{waypoint.name}</strong><small>{waypoint.category}</small></span>
-                  <ChevronRight size={15} />
-                </button>)}
-                {!filteredWaypoints.length && <div className="search-empty"><strong>Not in your map yet</strong><span>Try outside search below.</span></div>}
-                <button className="search-outside" onClick={searchOutsideMyMap}><Search size={14} /> Search Outside My Map</button>
+              {search.trim() && <div className="search-results" role="listbox" aria-label={externalSearchActive ? 'Outside map results' : 'Personal map results'}>
+                {externalSearchActive ? <>
+                  <div className="search-mode-header"><span><Globe2 size={13} /> OUTSIDE MY MAP</span><button onClick={returnToPersonalSearch}>Personal map</button></div>
+                  {externalSearchLoading && <div className="search-loading"><LoaderCircle size={17} /><span>Looking beyond your map…</span></div>}
+                  {externalSearchError && <div className="search-error"><strong>Search unavailable</strong><span>{externalSearchError}</span><button onClick={searchOutsideMyMap}>Try again</button></div>}
+                  {!externalSearchLoading && !externalSearchError && externalResults.map((result) => <button key={result.id} className="search-result" onClick={() => focusExternalResult(result)} role="option">
+                    <span className="search-result-icon search-result-icon--external"><Globe2 size={14} /></span>
+                    <span><strong>{result.name}</strong><small>{result.detail}</small></span>
+                    <ChevronRight size={15} />
+                  </button>)}
+                  {!externalSearchLoading && !externalSearchError && !externalResults.length && <div className="search-empty"><strong>No outside results</strong><span>Try an address, street, or place name.</span></div>}
+                  <div className="external-attribution">Search by <a href="https://nominatim.openstreetmap.org/" target="_blank" rel="noreferrer">Nominatim</a> · <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">© OpenStreetMap</a></div>
+                </> : <>
+                  {filteredWaypoints.slice(0, 4).map((waypoint) => <button key={waypoint.id} className="search-result" onClick={() => focusWaypoint(waypoint)} role="option">
+                    <span className="search-result-icon">{CATEGORY_EMOJI[waypoint.category]}</span>
+                    <span><strong>{waypoint.name}</strong><small>{waypoint.category}</small></span>
+                    <ChevronRight size={15} />
+                  </button>)}
+                  {!filteredWaypoints.length && <div className="search-empty"><strong>Not in your map yet</strong><span>Try outside search below.</span></div>}
+                  <button className="search-outside" onClick={searchOutsideMyMap}><Search size={14} /> Search Outside My Map</button>
+                </>}
               </div>}
             </div>
             <div className="toolbar-row">

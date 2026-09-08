@@ -79,6 +79,25 @@
   transform: rotate(45deg);
 }
 
+.external-result-marker {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 3px solid #fffdf8;
+  border-radius: 50% 50% 50% 4px;
+  background: #5c8f83;
+  box-shadow: 0 5px 13px rgba(41, 68, 67, .28);
+  transform: rotate(-45deg);
+}
+
+.external-result-marker span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #fffdf8;
+}
+
 @keyframes location-pulse {
   0% { transform: scale(.52); opacity: .94; }
   75%, 100% { transform: scale(1.18); opacity: 0; }
