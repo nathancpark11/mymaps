@@ -39,7 +39,7 @@ public/
   sw.js                    App-shell caching only
   icon.svg                 Lightweight app icon
 api/search.js              Minimal Vercel proxy for deliberate geocoding requests
-api/roads.js               Small local Overpass road-data proxy
+  api/roads.js               Small local OpenStreetMap map-area proxy
 ```
 
 `localStore` is the seam for a future sync adapter. Waypoints, trips, and discovered segments are separate records by design: a road can remain discovered permanently even though the individual trip that discovered it is retained as history.
@@ -52,7 +52,7 @@ Each accepted point is matched against nearby local road segments. A successful 
 
 ### Local road data
 
-The app requests a deliberately small area around the current location (approximately a 2.5 km radius) through `api/roads.js`. The proxy queries an Overpass public instance for drivable `highway` types and falls back to a second public instance if the primary is unavailable. Normalized OSM ways are split into two-point segments with stable identifiers based on the OSM way ID and endpoint coordinates. Road metadata is cached in IndexedDB using a small geographic cache key.
+The app requests a deliberately small area around the current location (approximately a 2.5 km radius) through `api/roads.js`. The proxy uses the official OpenStreetMap small-area map endpoint, filters the returned XML to drivable `highway` types, and converts OSM ways into JSON road geometry. Normalized OSM ways are split into two-point segments with stable identifiers based on the OSM way ID and endpoint coordinates. Road metadata is cached in IndexedDB using a small geographic cache key.
 
 ### Matching approach and thresholds
 
