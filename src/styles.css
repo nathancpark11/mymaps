@@ -79,6 +79,13 @@ button { cursor: pointer; }
 .map-caption-icon { display: grid; width: 29px; height: 29px; place-items: center; border-radius: 10px; background: #deebe1; color: var(--teal); }
 .map-caption p { margin: 0; color: var(--ink); font-size: 11px; font-weight: 700; }
 .map-caption span { display: block; margin-top: 2px; color: var(--ink-muted); font-size: 10px; }
+.location-prompt { position: absolute; z-index: 4; top: 82px; left: 50%; display: flex; max-width: min(430px, calc(100% - 34px)); align-items: center; gap: 9px; padding: 9px 10px 9px 9px; border: 1px solid rgba(46, 78, 78, .13); border-radius: 14px; background: rgba(255, 253, 248, .95); box-shadow: 0 8px 20px rgba(51, 77, 71, .12); transform: translateX(-50%); backdrop-filter: blur(12px); }
+.location-prompt-icon { display: grid; width: 29px; height: 29px; flex: 0 0 auto; place-items: center; border-radius: 10px; background: #f6e3d2; color: var(--orange-deep); }
+.location-prompt-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; }
+.location-prompt-copy strong { overflow: hidden; color: var(--ink); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.location-prompt-copy span { overflow: hidden; color: var(--ink-muted); font-size: 9px; line-height: 1.25; text-overflow: ellipsis; }
+.location-prompt button { flex: 0 0 auto; padding: 8px 9px; border: 0; border-radius: 9px; background: var(--teal); color: #fffdf8; font-size: 9px; font-weight: 700; white-space: nowrap; }
+.location-prompt button:hover { background: #315d5c; }
 .add-waypoint-button { position: absolute; z-index: 4; right: 26px; bottom: 27px; display: grid; width: 57px; height: 57px; place-items: center; border: 4px solid rgba(255, 253, 248, .84); border-radius: 19px; background: var(--orange); color: #fffdf8; box-shadow: 0 8px 18px rgba(180, 101, 54, .28), 0 2px 0 #d07846; transition: transform .15s ease, box-shadow .15s ease; }
 .add-waypoint-button:hover { box-shadow: 0 11px 22px rgba(180, 101, 54, .32), 0 2px 0 #d07846; transform: translateY(-2px) rotate(2deg); }
 .map-legend { position: absolute; z-index: 3; right: 95px; bottom: 32px; display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-radius: 11px; background: rgba(255, 253, 248, .75); color: var(--ink-muted); font-family: 'DM Mono', monospace; font-size: 8px; text-transform: uppercase; backdrop-filter: blur(8px); }
@@ -198,6 +205,7 @@ h2 { margin-bottom: 0; color: var(--ink); font-size: 17px; font-weight: 600; let
   .location-status { font-size: 9px; }
   .map-stage { height: min(66svh, 630px); min-height: 480px; }
   .map-toolbar { top: 14px; right: 16px; left: 16px; }
+  .location-prompt { top: 70px; }
   .search-box { max-width: none; }
   .search-box kbd { display: none; }
   .icon-button { width: 43px; height: 43px; }

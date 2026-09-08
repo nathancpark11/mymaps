@@ -34,8 +34,34 @@ function App() {
   const [isComposerOpen, setIsComposerOpen] = useState(false)
   const [routingMode, setRoutingMode] = useState<RoutingMode>('Normal')
   const [toast, setToast] = useState<string | null>(null)
+  const [locationError, setLocationError] = useState<number | null>(null)
   const mapRef = useRef<MapLibreMap | null>(null)
   const searchRef = useRef<HTMLInputElement>(null)
+
+  const requestLocation = () => {
+    if (!('geolocation' in navigator)) {
+      setLocationMode('fallback')
+      setLocationError(0)
+      return
+    }
+
+    setLocationMode('loading')
+    setLocationError(null)
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const nextLocation = { lat: position.coords.latitude, lng: position.coords.longitude }
+        setLocation(nextLocation)
+        setLocationMode('live')
+        setLocationError(null)
+        window.localStorage.setItem('my-maps:last-location', JSON.stringify(nextLocation))
+      },
+      (error) => {
+        setLocationMode('fallback')
+        setLocationError(error.code)
+      },
+      { enableHighAccuracy: true, maximumAge: 30_000, timeout: 15_000 },
+    )
+  }
 
   useEffect(() => {
     localStore.listWaypoints().then(setWaypoints).catch(() => setWaypoints([]))
@@ -50,19 +76,7 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (!('geolocation' in navigator)) {
-      setLocationMode('fallback')
-      return
-    }
-
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        setLocation({ lat: position.coords.latitude, lng: position.coords.longitude })
-        setLocationMode('live')
-      },
-      () => setLocationMode('fallback'),
-      { enableHighAccuracy: true, maximumAge: 60_000, timeout: 10_000 },
-    )
+    requestLocation()
   }, [])
 
   useEffect(() => {
@@ -71,8 +85,13 @@ function App() {
       (nextLocation) => {
         setLocation(nextLocation)
         setLocationMode('live')
+        setLocationError(null)
+        window.localStorage.setItem('my-maps:last-location', JSON.stringify(nextLocation))
       },
-      () => setLocationMode((current) => (current === 'live' ? current : 'fallback')),
+      (error) => {
+        setLocationMode((current) => (current === 'live' ? current : 'fallback'))
+        setLocationError(error.code)
+      },
     )
     return () => {
       if (watchId !== undefined) navigator.geolocation.clearWatch(watchId)
@@ -107,9 +126,21 @@ function App() {
   }
 
   const recenterMap = () => {
+    if (locationMode !== 'live') {
+      requestLocation()
+      return
+    }
     mapRef.current?.flyTo({ center: [location.lng, location.lat], zoom: 14.2, duration: 850, essential: true })
-    setToast(locationMode === 'live' ? 'Centered on your location' : 'Showing the starting area')
+    setToast('Centered on your location')
   }
+
+  const locationHelp = locationError === 1
+    ? 'Location access is blocked. Allow it for this site, then try again.'
+    : locationError === 2
+      ? 'Your device could not find a GPS fix. Try again somewhere with a clearer view of the sky.'
+      : locationError === 3
+        ? 'The location request timed out. Try again.'
+        : 'Allow location access to move the map to where you are.'
 
   const searchOutsideMyMap = () => {
     setToast(search.trim() ? `Outside search for “${search.trim()}” is coming later` : 'Outside search is coming later')
@@ -167,6 +198,12 @@ function App() {
               <span>{locationMode === 'fallback' ? 'Allow location for a more personal view' : 'Drive it. Discover it.'}</span>
             </div>
           </div>
+
+          {locationMode === 'fallback' && <div className="location-prompt" role="status">
+            <div className="location-prompt-icon"><LocateFixed size={17} /></div>
+            <div className="location-prompt-copy"><strong>Map is using a starting area</strong><span>{locationHelp}</span></div>
+            <button onClick={requestLocation}>Use my location</button>
+          </div>}
 
           <button className="add-waypoint-button" onClick={() => setIsComposerOpen(true)} aria-label="Add a waypoint">
             <Plus size={25} strokeWidth={2.6} />
