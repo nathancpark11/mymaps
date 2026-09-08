@@ -306,6 +306,8 @@ export function MapCanvas({ location, waypoints, roadSegments, discoveredSegment
   const sectorStatsRef = useRef(sectorStats)
   const followActiveRef = useRef(followActive)
   const onFollowInterruptedRef = useRef(onFollowInterrupted)
+  const developerRouteEnabledRef = useRef(developerRouteEnabled)
+  const developerRoutePointsRef = useRef(developerRoutePoints)
   locationRef.current = location
   roadSegmentsRef.current = roadSegments
   discoveredSegmentIdsRef.current = discoveredSegmentIds
@@ -314,6 +316,8 @@ export function MapCanvas({ location, waypoints, roadSegments, discoveredSegment
   sectorStatsRef.current = sectorStats
   followActiveRef.current = followActive
   onFollowInterruptedRef.current = onFollowInterrupted
+  developerRouteEnabledRef.current = developerRouteEnabled
+  developerRoutePointsRef.current = developerRoutePoints
   const onMapReadyRef = useRef(onMapReady)
   onMapReadyRef.current = onMapReady
 
@@ -361,7 +365,7 @@ export function MapCanvas({ location, waypoints, roadSegments, discoveredSegment
       ;(map.getSource('roads') as GeoJSONSource).setData(roadData(roadSegmentsRef.current, discoveredSegmentIdsRef.current))
       ;(map.getSource('activeTrace') as GeoJSONSource).setData(traceData(activeTraceRef.current))
       ;(map.getSource('historicalTrace') as GeoJSONSource).setData(traceData(historicalTraceRef.current))
-      ;(map.getSource('developerRoute') as GeoJSONSource).setData(developerRouteEnabled ? traceData(developerRoutePoints) : traceData([]))
+      ;(map.getSource('developerRoute') as GeoJSONSource).setData(developerRouteEnabledRef.current ? traceData(developerRoutePointsRef.current) : traceData([]))
       ;(map.getSource('diagnosticRawPoints') as GeoJSONSource).setData(diagnosticEnabled ? pointData(diagnosticRawPoints) : pointData([]))
       ;(map.getSource('diagnosticAcceptedPoints') as GeoJSONSource).setData(diagnosticEnabled ? pointData(diagnosticAcceptedPoints) : pointData([]))
       ;(map.getSource('diagnosticRejectedPoints') as GeoJSONSource).setData(diagnosticEnabled ? pointData(diagnosticRejectedPoints) : pointData([]))
