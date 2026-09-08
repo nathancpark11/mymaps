@@ -7,7 +7,6 @@ import {
   Compass,
   Footprints,
   LocateFixed,
-  Map as MapIcon,
   MapPinned,
   Navigation,
   Plus,
@@ -112,6 +111,12 @@ function App() {
     return waypoints.filter((waypoint) => `${waypoint.name} ${waypoint.category}`.toLowerCase().includes(normalizedSearch))
   }, [search, waypoints])
 
+  const focusWaypoint = (waypoint: Waypoint) => {
+    setSearch(waypoint.name)
+    mapRef.current?.flyTo({ center: [waypoint.location.lng, waypoint.location.lat], zoom: 15.5, duration: 800, essential: true })
+    setToast(`Centered on ${waypoint.name}`)
+  }
+
   const saveWaypoint = (name: string, category: WaypointCategory) => {
     const waypoint: Waypoint = {
       id: makeId('waypoint'),
@@ -151,20 +156,6 @@ function App() {
   return (
     <div className="app-shell">
       <section className="map-column">
-        <header className="topbar">
-          <div className="brand-lockup">
-            <div className="brand-mark" aria-hidden="true"><MapIcon size={19} strokeWidth={2.4} /></div>
-            <div>
-              <p className="brand-name">my-maps</p>
-              <p className="brand-tagline">learn your way around</p>
-            </div>
-          </div>
-          <div className="location-status" title={locationMode === 'live' ? 'Using live device location' : 'Using the map starting area'}>
-            <span className={`status-dot status-dot--${locationMode}`} />
-            {locationMode === 'live' ? 'Live location' : locationMode === 'loading' ? 'Finding you…' : 'Starting area'}
-          </div>
-        </header>
-
         <section className="map-stage" aria-label="Exploration map">
           <MapCanvas
             location={location}
@@ -174,19 +165,33 @@ function App() {
           />
           <div className="map-wash" aria-hidden="true" />
           <div className="map-toolbar">
-            <label className="search-box">
-              <Search size={18} strokeWidth={2.1} />
-              <input
-                ref={searchRef}
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                placeholder="Search your map"
-                aria-label="Search your personal map"
-              />
-              <kbd>⌘ K</kbd>
-            </label>
+            <div className="search-control">
+              <label className="search-box">
+                <Search size={18} strokeWidth={2.1} />
+                <input
+                  ref={searchRef}
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' && filteredWaypoints[0]) focusWaypoint(filteredWaypoints[0])
+                    if (event.key === 'Enter' && !filteredWaypoints[0] && search.trim()) searchOutsideMyMap()
+                  }}
+                  placeholder="Search your map"
+                  aria-label="Search your personal map"
+                />
+                <kbd>⌘ K</kbd>
+              </label>
+              {search.trim() && <div className="search-results" role="listbox" aria-label="Personal map results">
+                {filteredWaypoints.slice(0, 4).map((waypoint) => <button key={waypoint.id} className="search-result" onClick={() => focusWaypoint(waypoint)} role="option">
+                  <span className="search-result-icon">{CATEGORY_EMOJI[waypoint.category]}</span>
+                  <span><strong>{waypoint.name}</strong><small>{waypoint.category}</small></span>
+                  <ChevronRight size={15} />
+                </button>)}
+                {!filteredWaypoints.length && <div className="search-empty"><strong>Not in your map yet</strong><span>Try outside search below.</span></div>}
+                <button className="search-outside" onClick={searchOutsideMyMap}><Search size={14} /> Search Outside My Map</button>
+              </div>}
+            </div>
             <div className="toolbar-row">
-              <div className="map-chip"><span className="chip-swatch" /> Sectors on</div>
               <button className="icon-button" onClick={recenterMap} aria-label="Center map on your location" title="Center map">
                 <LocateFixed size={18} />
               </button>
@@ -256,7 +261,7 @@ function App() {
               </div>
             ) : filteredWaypoints.length ? (
               filteredWaypoints.slice(0, 4).map((waypoint) => (
-                <button key={waypoint.id} className="place-row" onClick={() => mapRef.current?.flyTo({ center: [waypoint.location.lng, waypoint.location.lat], zoom: 15.5, duration: 800 })}>
+                <button key={waypoint.id} className="place-row" onClick={() => focusWaypoint(waypoint)}>
                   <span className="place-icon">{CATEGORY_EMOJI[waypoint.category]}</span>
                   <span className="place-details"><strong>{waypoint.name}</strong><small>{waypoint.category}</small></span>
                   <ChevronRight size={16} className="place-arrow" />
