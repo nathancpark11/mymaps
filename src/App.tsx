@@ -382,6 +382,7 @@ function App() {
   const focusWaypoint = (waypoint: Waypoint) => {
     setSearch(waypoint.name)
     setDeveloperRouteTarget({ location: waypoint.location, label: waypoint.name })
+    setDeveloperRouteEnabled(true)
     setExternalSearchActive(false)
     setExternalLocation(null)
     mapRef.current?.flyTo({ center: [waypoint.location.lng, waypoint.location.lat], zoom: 15.5, duration: 800, essential: true })
@@ -532,7 +533,11 @@ function App() {
     try {
       const results = await searchExternalPlaces(query, controller.signal)
       setExternalResults(results)
-      if (!results.length) setToast(`No outside results for “${query}”`)
+      if (results[0]) {
+        focusExternalResult(results[0])
+      } else {
+        setToast(`No outside results for “${query}”`)
+      }
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') return
       setExternalSearchError('Outside search is temporarily unavailable. Try again in a moment.')
@@ -544,6 +549,7 @@ function App() {
   const focusExternalResult = (result: ExternalSearchResult) => {
     setExternalLocation(result)
     setDeveloperRouteTarget({ location: result.location, label: result.name })
+    setDeveloperRouteEnabled(true)
     mapRef.current?.flyTo({ center: [result.location.lng, result.location.lat], zoom: 15, duration: 900, essential: true })
     setToast(`Showing ${result.name}`)
   }
