@@ -12,6 +12,12 @@ type MapCanvasProps = {
   activeTrace: Coordinates[]
   historicalTrace: Coordinates[]
   sectorStats: Record<string, { totalSegments: number; discoveredSegments: number; percentage: number }>
+  diagnosticEnabled: boolean
+  diagnosticRawPoints: Coordinates[]
+  diagnosticAcceptedPoints: Coordinates[]
+  diagnosticRejectedPoints: Coordinates[]
+  diagnosticCandidateSegments: RoadSegment[]
+  diagnosticMatchedSegment: RoadSegment | null
   externalLocation?: { location: Coordinates; label: string } | null
   isComposingWaypoint: boolean
   onMapReady?: (map: MapLibreMap) => void
@@ -40,6 +46,26 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
       data: { type: 'FeatureCollection', features: [] },
     },
     historicalTrace: {
+      type: 'geojson',
+      data: { type: 'FeatureCollection', features: [] },
+    },
+    diagnosticRawPoints: {
+      type: 'geojson',
+      data: { type: 'FeatureCollection', features: [] },
+    },
+    diagnosticAcceptedPoints: {
+      type: 'geojson',
+      data: { type: 'FeatureCollection', features: [] },
+    },
+    diagnosticRejectedPoints: {
+      type: 'geojson',
+      data: { type: 'FeatureCollection', features: [] },
+    },
+    diagnosticCandidates: {
+      type: 'geojson',
+      data: { type: 'FeatureCollection', features: [] },
+    },
+    diagnosticMatched: {
       type: 'geojson',
       data: { type: 'FeatureCollection', features: [] },
     },
@@ -121,6 +147,36 @@ const MAP_STYLE: maplibregl.StyleSpecification = {
       source: 'activeTrace',
       paint: { 'line-color': '#dc7746', 'line-width': 4, 'line-opacity': 0.96 },
     },
+    {
+      id: 'diagnostic-candidates',
+      type: 'line',
+      source: 'diagnosticCandidates',
+      paint: { 'line-color': '#d6a55d', 'line-width': 2, 'line-opacity': 0.78, 'line-dasharray': [1, 1.5] },
+    },
+    {
+      id: 'diagnostic-matched',
+      type: 'line',
+      source: 'diagnosticMatched',
+      paint: { 'line-color': '#a95643', 'line-width': 6, 'line-opacity': 0.9 },
+    },
+    {
+      id: 'diagnostic-raw-points',
+      type: 'circle',
+      source: 'diagnosticRawPoints',
+      paint: { 'circle-radius': 3, 'circle-color': '#e6b45f', 'circle-opacity': 0.72, 'circle-stroke-color': '#fffdf8', 'circle-stroke-width': 1 },
+    },
+    {
+      id: 'diagnostic-accepted-points',
+      type: 'circle',
+      source: 'diagnosticAcceptedPoints',
+      paint: { 'circle-radius': 3.5, 'circle-color': '#438579', 'circle-opacity': 0.92, 'circle-stroke-color': '#fffdf8', 'circle-stroke-width': 1 },
+    },
+    {
+      id: 'diagnostic-rejected-points',
+      type: 'circle',
+      source: 'diagnosticRejectedPoints',
+      paint: { 'circle-radius': 5, 'circle-color': '#b45f70', 'circle-opacity': 0.92, 'circle-stroke-color': '#fffdf8', 'circle-stroke-width': 1.5 },
+    },
   ],
 }
 
@@ -187,6 +243,13 @@ function traceData(points: Coordinates[]) {
   }
 }
 
+function pointData(points: Coordinates[]) {
+  return {
+    type: 'FeatureCollection' as const,
+    features: points.map((point) => ({ type: 'Feature' as const, properties: {}, geometry: { type: 'Point' as const, coordinates: [point.lng, point.lat] } })),
+  }
+}
+
 function createCurrentMarker() {
   const element = document.createElement('div')
   element.className = 'current-location-marker'
@@ -210,7 +273,7 @@ function createExternalMarker(label: string) {
   return element
 }
 
-export function MapCanvas({ location, waypoints, roadSegments, discoveredSegmentIds, activeTrace, historicalTrace, sectorStats, externalLocation, isComposingWaypoint, onMapReady }: MapCanvasProps) {
+export function MapCanvas({ location, waypoints, roadSegments, discoveredSegmentIds, activeTrace, historicalTrace, sectorStats, diagnosticEnabled, diagnosticRawPoints, diagnosticAcceptedPoints, diagnosticRejectedPoints, diagnosticCandidateSegments, diagnosticMatchedSegment, externalLocation, isComposingWaypoint, onMapReady }: MapCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<MapLibreMap | null>(null)
   const currentMarkerRef = useRef<Marker | null>(null)
@@ -252,6 +315,11 @@ export function MapCanvas({ location, waypoints, roadSegments, discoveredSegment
       ;(map.getSource('roads') as GeoJSONSource).setData(roadData(roadSegmentsRef.current, discoveredSegmentIdsRef.current))
       ;(map.getSource('activeTrace') as GeoJSONSource).setData(traceData(activeTraceRef.current))
       ;(map.getSource('historicalTrace') as GeoJSONSource).setData(traceData(historicalTraceRef.current))
+      ;(map.getSource('diagnosticRawPoints') as GeoJSONSource).setData(diagnosticEnabled ? pointData(diagnosticRawPoints) : pointData([]))
+      ;(map.getSource('diagnosticAcceptedPoints') as GeoJSONSource).setData(diagnosticEnabled ? pointData(diagnosticAcceptedPoints) : pointData([]))
+      ;(map.getSource('diagnosticRejectedPoints') as GeoJSONSource).setData(diagnosticEnabled ? pointData(diagnosticRejectedPoints) : pointData([]))
+      ;(map.getSource('diagnosticCandidates') as GeoJSONSource).setData(diagnosticEnabled ? roadData(diagnosticCandidateSegments, []) : roadData([], []))
+      ;(map.getSource('diagnosticMatched') as GeoJSONSource).setData(diagnosticEnabled && diagnosticMatchedSegment ? roadData([diagnosticMatchedSegment], []) : roadData([], []))
       onMapReadyRef.current?.(map)
     })
     mapRef.current = map
@@ -303,6 +371,16 @@ export function MapCanvas({ location, waypoints, roadSegments, discoveredSegment
     if (!map || !map.isStyleLoaded()) return
     ;(map.getSource('historicalTrace') as GeoJSONSource)?.setData(traceData(historicalTrace))
   }, [historicalTrace])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !map.isStyleLoaded()) return
+    ;(map.getSource('diagnosticRawPoints') as GeoJSONSource)?.setData(diagnosticEnabled ? pointData(diagnosticRawPoints) : pointData([]))
+    ;(map.getSource('diagnosticAcceptedPoints') as GeoJSONSource)?.setData(diagnosticEnabled ? pointData(diagnosticAcceptedPoints) : pointData([]))
+    ;(map.getSource('diagnosticRejectedPoints') as GeoJSONSource)?.setData(diagnosticEnabled ? pointData(diagnosticRejectedPoints) : pointData([]))
+    ;(map.getSource('diagnosticCandidates') as GeoJSONSource)?.setData(diagnosticEnabled ? roadData(diagnosticCandidateSegments, []) : roadData([], []))
+    ;(map.getSource('diagnosticMatched') as GeoJSONSource)?.setData(diagnosticEnabled && diagnosticMatchedSegment ? roadData([diagnosticMatchedSegment], []) : roadData([], []))
+  }, [diagnosticEnabled, diagnosticRawPoints, diagnosticAcceptedPoints, diagnosticRejectedPoints, diagnosticCandidateSegments, diagnosticMatchedSegment])
 
   useEffect(() => {
     const map = mapRef.current

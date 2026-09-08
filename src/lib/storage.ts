@@ -79,6 +79,7 @@ export const localStore = {
     const records = await getAll<RoadDataCache>('roadData')
     return records.find((record) => record.cacheKey === cacheKey)
   },
+  listRoadData: () => getAll<RoadDataCache>('roadData'),
   saveRoadData: (roadData: RoadDataCache) => put('roadData', roadData),
   snapshot: async (): Promise<{ waypoints: Waypoint[]; trips: Trip[]; discoveries: DiscoveredSegment[] }> => ({
     waypoints: await getAll<Waypoint>('waypoints'),

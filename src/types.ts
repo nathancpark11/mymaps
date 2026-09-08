@@ -26,12 +26,40 @@ export type TripPoint = Coordinates & {
   accuracyMeters?: number
 }
 
+export type GpsObservation = TripPoint & {
+  observationId: string
+}
+
+export type PointDecisionStatus = 'accepted' | 'rejected' | 'stationary'
+
+export type MatchDecision = {
+  observationId: string
+  status: PointDecisionStatus
+  acceptedPoint: boolean
+  rejectionReason?: string
+  matchRejectionReason?: string
+  matchedSegmentId?: string
+  matchedRoadName?: string
+  matchDistanceMeters?: number
+  candidateCount: number
+  candidateSegmentIds: string[]
+  nearestCandidateDistanceMeters?: number
+  secondNearestCandidateDistanceMeters?: number
+  ambiguous: boolean
+  continuityAffected: boolean
+  continuityReason?: string
+  movementDistanceMeters?: number
+  movementSpeedMetersPerSecond?: number
+}
+
 export type Trip = {
   id: string
   startedAt: string
   endedAt?: string
   points: TripPoint[]
   distanceMeters: number
+  observations?: GpsObservation[]
+  decisions?: MatchDecision[]
 }
 
 export type DiscoveredSegment = {

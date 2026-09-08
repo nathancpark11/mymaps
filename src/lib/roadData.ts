@@ -5,6 +5,8 @@ import type { Coordinates, RoadDataCache, RoadSegment } from '../types'
 export const ROAD_DATA_RADIUS_METERS = 2_500
 const ROAD_CACHE_GRID_DEGREES = 0.02
 const MAJOR_HIGHWAYS = new Set(['motorway', 'trunk', 'primary', 'secondary', 'tertiary'])
+export const ROAD_DATA_CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000
+const inFlightRequests = new Map<string, Promise<RoadDataCache>>()
 
 type OverpassElement = {
   type: 'way'
@@ -66,8 +68,12 @@ export function normalizeRoadData(payload: OverpassResponse, center: Coordinates
 
 export async function loadRoadData(location: Coordinates): Promise<RoadDataCache> {
   const cacheKey = roadCacheKey(location)
+  const existingRequest = inFlightRequests.get(cacheKey)
+  if (existingRequest) return existingRequest
+
+  const request = (async () => {
   const cached = await localStore.getRoadData(cacheKey)
-  if (cached) return cached
+  if (cached && Date.now() - Date.parse(cached.fetchedAt) < ROAD_DATA_CACHE_MAX_AGE_MS) return cached
 
   const bbox = roadBbox(location)
   const params = new URLSearchParams({
@@ -87,6 +93,19 @@ export async function loadRoadData(location: Coordinates): Promise<RoadDataCache
   }
   await localStore.saveRoadData(roadData)
   return roadData
+  })()
+  inFlightRequests.set(cacheKey, request)
+  try {
+    return await request
+  } finally {
+    if (inFlightRequests.get(cacheKey) === request) inFlightRequests.delete(cacheKey)
+  }
+}
+
+export function mergeRoadSegments(current: RoadSegment[], incoming: RoadSegment[]) {
+  const merged = new Map(current.map((segment) => [segment.segmentId, segment]))
+  incoming.forEach((segment) => merged.set(segment.segmentId, segment))
+  return [...merged.values()]
 }
 
 export function emptyRoadData(): RoadDataCache {

@@ -19,10 +19,10 @@ import {
 import { MapCanvas } from './components/MapCanvas'
 import { distanceBetween, FALLBACK_LOCATION, makeId, sectorIdForCoordinate, watchCurrentLocation } from './lib/geo'
 import { searchOutsideMap as searchExternalPlaces, type ExternalSearchResult } from './lib/externalSearch'
-import { loadRoadData, roadCacheKey } from './lib/roadData'
-import { createRoadIndex, matchPointToRoad, shouldAcceptTripPoint, type RoadIndex } from './lib/roadMatching'
+import { loadRoadData, mergeRoadSegments, roadCacheKey } from './lib/roadData'
+import { createRoadIndex, decisionWithObservationId, evaluateTripPoint, MATCHING_THRESHOLDS, type RoadIndex } from './lib/roadMatching'
 import { localStore } from './lib/storage'
-import type { Coordinates, DiscoveredSegment, RoadSegment, Trip, TripPoint, Waypoint, WaypointCategory } from './types'
+import type { Coordinates, DiscoveredSegment, GpsObservation, MatchDecision, RoadSegment, Trip, TripPoint, Waypoint, WaypointCategory } from './types'
 import { CATEGORY_EMOJI, WAYPOINT_CATEGORIES } from './types'
 
 type LocationMode = 'loading' | 'live' | 'fallback'
@@ -34,6 +34,8 @@ type ActiveTrip = {
   id: string
   startedAt: string
   points: TripPoint[]
+  observations: GpsObservation[]
+  decisions: MatchDecision[]
   distanceMeters: number
   matchedSegmentIds: string[]
   lastMatchedSegmentId?: string
@@ -60,6 +62,8 @@ function App() {
   const [completedTrips, setCompletedTrips] = useState<Trip[]>([])
   const [selectedTripId, setSelectedTripId] = useState<string | null>(null)
   const [activeTrip, setActiveTrip] = useState<ActiveTrip | null>(null)
+  const [diagnosticEnabled, setDiagnosticEnabled] = useState(false)
+  const [selectedObservationIndex, setSelectedObservationIndex] = useState(0)
   const mapRef = useRef<MapLibreMap | null>(null)
   const searchRef = useRef<HTMLInputElement>(null)
   const externalAbortRef = useRef<AbortController | null>(null)
@@ -128,7 +132,7 @@ function App() {
     setRoadDataStatus('loading')
     loadRoadData(location).then((roadData) => {
       if (cancelled) return
-      setRoadSegments(roadData.segments)
+      setRoadSegments((current) => mergeRoadSegments(current, roadData.segments))
       setRoadDataStatus('ready')
     }).catch(() => {
       if (!cancelled) {
@@ -165,14 +169,26 @@ function App() {
     if (!draft) return
     const point: TripPoint = { ...coordinates, accuracyMeters, recordedAt: new Date().toISOString() }
     const previousPoint = draft.points[draft.points.length - 1]
-    if (!shouldAcceptTripPoint(previousPoint, point)) return
+    const observation: GpsObservation = { ...point, observationId: makeId('observation') }
+    const evaluation = evaluateTripPoint(point, roadIndexRef.current, {
+      previousPoint,
+      previousSegment: draft.lastMatchedSegmentId ? roadSegmentsRef.current.find((segment) => segment.segmentId === draft.lastMatchedSegmentId) : undefined,
+    })
+    const decision = decisionWithObservationId(observation.observationId, evaluation.decision)
+    const match = evaluation.match
+    const observations = [...draft.observations, observation]
+    const decisions = [...draft.decisions, decision]
+    setSelectedObservationIndex(decisions.length - 1)
 
-    const match = roadIndexRef.current
-      ? matchPointToRoad(point, roadIndexRef.current, {
-          previousPoint,
-          previousSegment: draft.lastMatchedSegmentId ? roadSegmentsRef.current.find((segment) => segment.segmentId === draft.lastMatchedSegmentId) : undefined,
-        })
-      : null
+    if (!evaluation.decision.acceptedPoint) {
+      const rejectedTrip = { ...draft, observations, decisions }
+      activeTripRef.current = rejectedTrip
+      setActiveTrip(rejectedTrip)
+      setLocation(coordinates)
+      setLocationMode('live')
+      return
+    }
+
     const matchedSegmentIds = match && !draft.matchedSegmentIds.includes(match.segment.segmentId)
       ? [...draft.matchedSegmentIds, match.segment.segmentId]
       : draft.matchedSegmentIds
@@ -191,6 +207,8 @@ function App() {
     const updatedTrip: ActiveTrip = {
       ...draft,
       points: [...draft.points, point],
+      observations,
+      decisions,
       distanceMeters: draft.distanceMeters + (previousPoint ? distanceBetween(previousPoint, point) : 0),
       matchedSegmentIds,
       lastMatchedSegmentId: match?.segment.segmentId ?? draft.lastMatchedSegmentId,
@@ -241,6 +259,43 @@ function App() {
   const currentSectorId = sectorIdForCoordinate(location, location)
   const currentSectorProgress = sectorStats[currentSectorId]?.percentage ?? 0
   const selectedTrip = completedTrips.find((trip) => trip.id === selectedTripId)
+  const diagnosticTrip = activeTrip ?? selectedTrip
+  const diagnosticObservations = diagnosticTrip?.observations ?? diagnosticTrip?.points.map((point, index) => ({ ...point, observationId: `legacy-${index}` })) ?? []
+  const diagnosticDecisions = diagnosticTrip?.decisions ?? []
+  const diagnosticIndex = diagnosticTrip
+    ? activeTrip ? Math.max(0, diagnosticObservations.length - 1) : Math.min(selectedObservationIndex, Math.max(0, diagnosticObservations.length - 1))
+    : 0
+  const focusedObservation = diagnosticObservations[diagnosticIndex]
+  const focusedDecision = diagnosticDecisions[diagnosticIndex]
+  const diagnosticCandidateSegments = focusedDecision
+    ? focusedDecision.candidateSegmentIds.map((id) => roadSegments.find((segment) => segment.segmentId === id)).filter((segment): segment is RoadSegment => Boolean(segment))
+    : []
+  const diagnosticMatchedSegment = focusedDecision?.matchedSegmentId
+    ? roadSegments.find((segment) => segment.segmentId === focusedDecision.matchedSegmentId) ?? null
+    : null
+  const diagnosticRejectedPoints = diagnosticDecisions.length
+    ? diagnosticObservations.filter((_, index) => diagnosticDecisions[index]?.status !== 'accepted')
+    : []
+
+  const exportTripDiagnostic = (trip: Trip) => {
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      matcherThresholds: MATCHING_THRESHOLDS,
+      trip,
+      acceptedPoints: trip.points,
+      observations: trip.observations ?? [],
+      decisions: trip.decisions ?? [],
+      matchedSegmentIds: [...new Set((trip.decisions ?? []).map((decision) => decision.matchedSegmentId).filter(Boolean))],
+      roadSegments: roadSegments.filter((segment) => (trip.decisions ?? []).some((decision) => decision.candidateSegmentIds.includes(segment.segmentId))),
+    }
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `my-maps-trip-${trip.startedAt.slice(0, 10)}.json`
+    link.click()
+    URL.revokeObjectURL(url)
+  }
 
   const focusWaypoint = (waypoint: Waypoint) => {
     setSearch(waypoint.name)
@@ -280,6 +335,8 @@ function App() {
       id: makeId('trip'),
       startedAt: new Date().toISOString(),
       points: [],
+      observations: [],
+      decisions: [],
       distanceMeters: 0,
       matchedSegmentIds: [],
     }
@@ -299,6 +356,8 @@ function App() {
       endedAt: new Date().toISOString(),
       points: draft.points,
       distanceMeters: draft.distanceMeters,
+      observations: draft.observations,
+      decisions: draft.decisions,
     }
     activeTripRef.current = null
     setActiveTrip(null)
@@ -313,6 +372,7 @@ function App() {
 
   const selectTrip = (trip: Trip) => {
     setSelectedTripId(trip.id)
+    setSelectedObservationIndex(0)
     if (!mapRef.current || !trip.points.length) return
     if (trip.points.length === 1) {
       mapRef.current.flyTo({ center: [trip.points[0].lng, trip.points[0].lat], zoom: 15, duration: 800, essential: true })
@@ -396,6 +456,12 @@ function App() {
             activeTrace={activeTrip?.points ?? []}
             historicalTrace={selectedTrip?.points ?? []}
             sectorStats={sectorStats}
+            diagnosticEnabled={diagnosticEnabled}
+            diagnosticRawPoints={diagnosticObservations}
+            diagnosticAcceptedPoints={diagnosticTrip?.points ?? []}
+            diagnosticRejectedPoints={diagnosticRejectedPoints}
+            diagnosticCandidateSegments={diagnosticCandidateSegments}
+            diagnosticMatchedSegment={diagnosticMatchedSegment}
             externalLocation={externalLocation ? { location: externalLocation.location, label: externalLocation.name } : null}
             isComposingWaypoint={isComposerOpen}
             onMapReady={(map) => { mapRef.current = map }}
@@ -543,6 +609,33 @@ function App() {
               <ChevronRight size={15} />
             </button>) : <div className="trip-empty"><Footprints size={16} /><span>Start a foreground trip to build your history.</span></div>}
           </div>
+
+          <div className="diagnostic-control-row">
+            <button className={`diagnostic-toggle ${diagnosticEnabled ? 'is-on' : ''}`} onClick={() => setDiagnosticEnabled((current) => !current)} aria-pressed={diagnosticEnabled}>
+              <span className="diagnostic-toggle-dot" /> Developer diagnostics {diagnosticEnabled ? 'on' : 'off'}
+            </button>
+            {selectedTrip && <button className="diagnostic-export" onClick={() => exportTripDiagnostic(selectedTrip)}>Export JSON</button>}
+          </div>
+          {diagnosticEnabled && <div className="diagnostic-panel">
+            <div className="diagnostic-panel-header"><div><p className="eyebrow">LIVE GPS PIPELINE</p><strong>{activeTrip ? 'Current trip' : selectedTrip ? 'Selected trip' : 'No trip selected'}</strong></div><span className="diagnostic-live-dot" /></div>
+            {diagnosticTrip && focusedObservation ? <>
+              {!activeTrip && diagnosticObservations.length > 1 && <label className="diagnostic-history-control">Inspect sample
+                <select value={diagnosticIndex} onChange={(event) => setSelectedObservationIndex(Number(event.target.value))}>
+                  {diagnosticObservations.map((observation, index) => <option key={observation.observationId} value={index}>{index + 1} · {new Date(observation.recordedAt).toLocaleTimeString()}</option>)}
+                </select>
+              </label>}
+              <div className="diagnostic-grid">
+                <div><small>GPS</small><strong>{focusedObservation.lat.toFixed(5)}, {focusedObservation.lng.toFixed(5)}</strong></div>
+                <div><small>ACCURACY</small><strong>{focusedObservation.accuracyMeters == null ? '—' : `${focusedObservation.accuracyMeters.toFixed(1)} m`}</strong></div>
+                <div><small>MOVE / SPEED</small><strong>{focusedDecision?.movementDistanceMeters == null ? '—' : `${focusedDecision.movementDistanceMeters.toFixed(1)} m / ${(focusedDecision.movementSpeedMetersPerSecond ?? 0).toFixed(1)} m/s`}</strong></div>
+                <div><small>STATUS</small><strong className={`diagnostic-status diagnostic-status--${focusedDecision?.status ?? 'unknown'}`}>{focusedDecision?.status ?? 'legacy'}</strong></div>
+              </div>
+              <div className="diagnostic-detail"><span>Decision</span><strong>{focusedDecision?.rejectionReason ?? focusedDecision?.matchRejectionReason ?? (focusedDecision?.matchedSegmentId ? 'matched and accepted' : 'accepted, no road match')}</strong></div>
+              <div className="diagnostic-detail"><span>Road</span><strong>{focusedDecision?.matchedRoadName ?? focusedDecision?.matchedSegmentId ?? 'No matched segment'}</strong></div>
+              <div className="diagnostic-detail"><span>Candidates</span><strong>{focusedDecision ? `${focusedDecision.candidateCount} · nearest ${focusedDecision.nearestCandidateDistanceMeters?.toFixed(1) ?? '—'} m · second ${focusedDecision.secondNearestCandidateDistanceMeters?.toFixed(1) ?? '—'} m` : 'Legacy trip has no decision record'}</strong></div>
+              <div className="diagnostic-detail"><span>Continuity</span><strong>{focusedDecision?.continuityReason ?? (focusedDecision?.continuityAffected ? 'affected' : 'continuous')}</strong></div>
+            </> : <p className="diagnostic-empty">Start a trip or select a saved trip to inspect GPS decisions.</p>}
+          </div>}
 
           <div className="section-heading section-heading--route">
             <div><p className="eyebrow">GENTLE GUIDANCE</p><h2>Explore on your terms</h2></div>
