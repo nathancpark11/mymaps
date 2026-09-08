@@ -21,6 +21,6 @@ export function watchCurrentLocation(
   return navigator.geolocation.watchPosition(
     (position) => onSuccess({ lat: position.coords.latitude, lng: position.coords.longitude }, position.coords.accuracy),
     onError,
-    { enableHighAccuracy: true, maximumAge: 15_000, timeout: 12_000 },
+    { enableHighAccuracy: false, maximumAge: 15_000, timeout: 20_000 },
   )
 }

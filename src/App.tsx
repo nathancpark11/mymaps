@@ -53,13 +53,14 @@ function App() {
         setLocation(nextLocation)
         setLocationMode('live')
         setLocationError(null)
-        window.localStorage.setItem('my-maps:last-location', JSON.stringify(nextLocation))
+        try { window.localStorage.setItem('my-maps:last-location', JSON.stringify(nextLocation)) } catch { /* local storage is optional */ }
       },
       (error) => {
         setLocationMode('fallback')
         setLocationError(error.code)
+        setToast(error.code === 1 ? 'Location access is blocked for this site' : 'Could not get a GPS fix yet')
       },
-      { enableHighAccuracy: true, maximumAge: 30_000, timeout: 15_000 },
+      { enableHighAccuracy: false, maximumAge: 0, timeout: 20_000 },
     )
   }
 
@@ -86,7 +87,7 @@ function App() {
         setLocation(nextLocation)
         setLocationMode('live')
         setLocationError(null)
-        window.localStorage.setItem('my-maps:last-location', JSON.stringify(nextLocation))
+        try { window.localStorage.setItem('my-maps:last-location', JSON.stringify(nextLocation)) } catch { /* local storage is optional */ }
       },
       (error) => {
         setLocationMode((current) => (current === 'live' ? current : 'fallback'))
@@ -140,7 +141,7 @@ function App() {
       ? 'Your device could not find a GPS fix. Try again somewhere with a clearer view of the sky.'
       : locationError === 3
         ? 'The location request timed out. Try again.'
-        : 'Allow location access to move the map to where you are.'
+    : 'Allow location access to move the map to where you are.'
 
   const searchOutsideMyMap = () => {
     setToast(search.trim() ? `Outside search for “${search.trim()}” is coming later` : 'Outside search is coming later')
@@ -199,10 +200,10 @@ function App() {
             </div>
           </div>
 
-          {locationMode === 'fallback' && <div className="location-prompt" role="status">
+          {locationMode !== 'live' && <div className="location-prompt" role="status">
             <div className="location-prompt-icon"><LocateFixed size={17} /></div>
-            <div className="location-prompt-copy"><strong>Map is using a starting area</strong><span>{locationHelp}</span></div>
-            <button onClick={requestLocation}>Use my location</button>
+            <div className="location-prompt-copy"><strong>{locationMode === 'loading' ? 'Finding your location…' : 'Map is using a starting area'}</strong><span>{locationMode === 'loading' ? 'Your browser may ask for permission. This can take a few seconds.' : locationHelp}</span></div>
+            <button onClick={requestLocation} disabled={locationMode === 'loading'}>{locationMode === 'loading' ? 'Waiting…' : 'Use my location'}</button>
           </div>}
 
           <button className="add-waypoint-button" onClick={() => setIsComposerOpen(true)} aria-label="Add a waypoint">
